@@ -5,6 +5,7 @@ import { Room } from '../rooms/room.model';
 import { Branch } from '../branches/branch.model';
 import { Stay } from '../stays/stay.model';
 import { Resident } from '../residents/resident.model';
+import { parseRentPaise } from '../../utils/rent';
 import { v4 as uuidv4 } from 'uuid';
 
 type BedResponse = {
@@ -21,7 +22,13 @@ type BedResponse = {
   residentId: string | null;
   residentName: string | null;
   residentPhone: string | null;
+  // monthlyRent is the ACTIVE STAY's rent — not the bed's rate. rentPaise is
+  // the bed's own override, effectiveRentPaise resolves bed -> room. Both are
+  // null when nothing is set, and the client then falls back to the owner
+  // default.
   monthlyRent: number | null;
+  rentPaise: number | null;
+  effectiveRentPaise: number | null;
   checkInDate: string | null;
   stayId: string | null;
   createdAt?: Date;
@@ -38,6 +45,7 @@ function toBedResponse(
     residentName?: string | null;
     residentPhone?: string | null;
     monthlyRent?: number | null;
+    roomRentPaise?: number | null;
     checkInDate?: string | null;
     stayId?: string | null;
   }
@@ -62,6 +70,8 @@ function toBedResponse(
     residentName: extras?.residentName ?? null,
     residentPhone: extras?.residentPhone ?? null,
     monthlyRent: extras?.monthlyRent ?? null,
+    rentPaise: bed.rentPaise ?? null,
+    effectiveRentPaise: bed.rentPaise ?? extras?.roomRentPaise ?? null,
     checkInDate: extras?.checkInDate ?? null,
     stayId: extras?.stayId ?? null,
     createdAt: bed.createdAt,
@@ -170,6 +180,7 @@ export const getBeds = async (req: AuthenticatedRequest, res: Response) => {
           roomNumber: room?.roomNumber ?? null,
           branchId: branch?._id ?? null,
           branchName: branch?.name ?? null,
+          roomRentPaise: room?.rentPaise ?? null,
           ...occ,
         });
       })
@@ -217,6 +228,7 @@ export const getBedById = async (req: AuthenticatedRequest, res: Response) => {
         roomNumber: room?.roomNumber ?? null,
         branchId: branch?._id ?? null,
         branchName: branch?.name ?? null,
+        roomRentPaise: room?.rentPaise ?? null,
         ...occupancy.get(bed._id),
       })
     );
@@ -231,9 +243,16 @@ export const getBedById = async (req: AuthenticatedRequest, res: Response) => {
 export const createBed = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const ownerId = req.ownerId!;
-    const { roomId, bedNumber, id } = req.body;
+    const { roomId, bedNumber, id, rentPaise } = req.body;
     const trimmed =
       typeof bedNumber === 'string' ? bedNumber.trim().toUpperCase() : '';
+
+    const rent = parseRentPaise(rentPaise);
+    if (rent.kind === 'invalid') {
+      return res.status(400).json({
+        error: { code: 'BAD_REQUEST', message: rent.message },
+      });
+    }
 
     if (!roomId || !trimmed) {
       return res.status(400).json({
@@ -272,12 +291,14 @@ export const createBed = async (req: AuthenticatedRequest, res: Response) => {
       roomId,
       bedNumber: trimmed,
       status: 'vacant',
+      rentPaise: rent.kind === 'ok' ? rent.value : null,
     });
     await bed.save();
     return res.status(201).json(
       toBedResponse(bed, {
         roomNumber: room.roomNumber,
         branchId: room.branchId,
+        roomRentPaise: room.rentPaise ?? null,
       })
     );
   } catch (error) {
@@ -292,7 +313,14 @@ export const updateBed = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const ownerId = req.ownerId!;
     const { id } = req.params;
-    const { bedNumber, status } = req.body;
+    const { bedNumber, status, rentPaise } = req.body;
+
+    const rent = parseRentPaise(rentPaise);
+    if (rent.kind === 'invalid') {
+      return res.status(400).json({
+        error: { code: 'BAD_REQUEST', message: rent.message },
+      });
+    }
 
     const bed = await Bed.findOne({ _id: id, ownerId, deletedAt: null });
     if (!bed) {
@@ -307,10 +335,26 @@ export const updateBed = async (req: AuthenticatedRequest, res: Response) => {
     if (status === 'vacant' || status === 'occupied') {
       bed.status = status;
     }
+    // 'absent' leaves the stored override untouched; an explicit null clears it.
+    if (rent.kind === 'ok') {
+      bed.rentPaise = rent.value;
+    }
 
     await bed.save();
     const occupancy = await getOccupancyByBedIds(ownerId, [bed._id]);
-    return res.status(200).json(toBedResponse(bed, occupancy.get(bed._id)));
+    const room = await Room.findOne({
+      _id: bed.roomId,
+      ownerId,
+      deletedAt: null,
+    });
+    return res.status(200).json(
+      toBedResponse(bed, {
+        roomNumber: room?.roomNumber ?? null,
+        branchId: room?.branchId ?? null,
+        roomRentPaise: room?.rentPaise ?? null,
+        ...occupancy.get(bed._id),
+      })
+    );
   } catch (error) {
     console.error('updateBed error:', error);
     return res.status(500).json({

@@ -1,9 +1,20 @@
 import { Response } from 'express';
 import { AuthenticatedRequest, scopeOwnerId } from '../../middleware/auth';
 import { Expense, IExpense, ExpenseCategory } from './expense.model';
+import { Branch } from '../branches/branch.model';
+
+/** null/'' = shared (no branch). Otherwise the branch must be the owner's. */
+async function resolveBranchId(ownerId: string, raw: unknown): Promise<{ ok: true; value: string | null } | { ok: false }> {
+  if (raw === undefined || raw === null || raw === '') return { ok: true, value: null };
+  if (typeof raw !== 'string') return { ok: false };
+  const branch = await Branch.findOne({ _id: raw, ownerId, deletedAt: null }).select('_id').lean();
+  return branch ? { ok: true, value: raw } : { ok: false };
+}
 import { v4 as uuidv4 } from 'uuid';
 
 const ALLOWED_CATEGORIES = new Set<ExpenseCategory>([
+  'food',
+  'rent',
   'electricity',
   'cleaning',
   'maintenance',
@@ -59,10 +70,15 @@ export const createExpense = async (req: AuthenticatedRequest, res: Response) =>
       });
     }
 
+    const branch = await resolveBranchId(ownerId, branchId);
+    if (!branch.ok) {
+      return res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'branchId is not one of your properties.' } });
+    }
+
     const expense = new Expense({
       _id: id || uuidv4(),
       ownerId,
-      branchId: branchId ?? null,
+      branchId: branch.value,
       category,
       amount: amountPaise,
       date: expenseDate,
@@ -145,7 +161,13 @@ export const updateExpense = async (req: AuthenticatedRequest, res: Response) =>
       }
       expense.date = expenseDate;
     }
-    if (branchId !== undefined) expense.branchId = branchId;
+    if (branchId !== undefined) {
+      const branch = await resolveBranchId(ownerId, branchId);
+      if (!branch.ok) {
+        return res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'branchId is not one of your properties.' } });
+      }
+      expense.branchId = branch.value;
+    }
     if (notes !== undefined) expense.notes = notes;
 
     await expense.save();

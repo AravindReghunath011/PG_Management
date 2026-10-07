@@ -238,6 +238,56 @@ describe('Resident + Check-in APIs', () => {
     expect(update.body.error.code).toBe('BAD_REQUEST');
   });
 
+  it('allows correcting checkInDate on an active stay, but rejects a future date and closed stays', async () => {
+    const resident = await request(app)
+      .post('/api/residents')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        name: 'Date Fix',
+        phone: '9666666666',
+        kycType: 'Aadhaar',
+        kycRef: 'D1',
+      });
+
+    const originalCheckIn = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000); // 5 days ago
+    const checkin = await request(app)
+      .post('/api/stays')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        residentId: resident.body.id,
+        bedId,
+        checkInDate: originalCheckIn.toISOString(),
+        monthlyRent: 850000,
+        securityDeposit: 1700000,
+      });
+
+    const corrected = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000); // 10 days ago
+    const update = await request(app)
+      .put(`/api/stays/${checkin.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ checkInDate: corrected.toISOString() });
+    expect(update.status).toBe(200);
+    expect(new Date(update.body.checkInDate).toISOString()).toBe(corrected.toISOString());
+
+    const future = new Date(Date.now() + 24 * 60 * 60 * 1000); // tomorrow
+    const futureUpdate = await request(app)
+      .put(`/api/stays/${checkin.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ checkInDate: future.toISOString() });
+    expect(futureUpdate.status).toBe(400);
+
+    await request(app)
+      .put(`/api/stays/${checkin.body.id}/checkout`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ checkOutDate: new Date().toISOString() });
+
+    const afterCheckout = await request(app)
+      .put(`/api/stays/${checkin.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ checkInDate: corrected.toISOString() });
+    expect(afterCheckout.status).toBe(400);
+  });
+
   it('defaults foodPreference to with_food and allows setting without_food', async () => {
     const defaulted = await request(app)
       .post('/api/residents')

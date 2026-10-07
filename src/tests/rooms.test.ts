@@ -191,4 +191,94 @@ describe('Room & Bed APIs', () => {
     expect(updated.status).toBe(200);
     expect(updated.body.amenities).toEqual(['ac']);
   });
+
+  describe('rent resolution (bed override -> room rate)', () => {
+    it('falls back to the room rate for beds with no override', async () => {
+      const room = await request(app)
+        .post('/api/rooms')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ branchId, roomNumber: '501', floor: 5, bedCount: 2, rentPaise: 950000 });
+
+      expect(room.status).toBe(201);
+      expect(room.body.rentPaise).toBe(950000);
+
+      const beds = await request(app)
+        .get(`/api/beds?roomId=${room.body.id}`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(beds.status).toBe(200);
+      expect(beds.body).toHaveLength(2);
+      for (const bed of beds.body) {
+        expect(bed.rentPaise).toBeNull();
+        expect(bed.effectiveRentPaise).toBe(950000);
+      }
+    });
+
+    it('lets a per-bed override win over the room rate', async () => {
+      const room = await request(app)
+        .post('/api/rooms')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ branchId, roomNumber: '502', floor: 5, bedCount: 2, rentPaise: 950000 });
+
+      const beds = await request(app)
+        .get(`/api/beds?roomId=${room.body.id}`)
+        .set('Authorization', `Bearer ${token}`);
+
+      const overridden = await request(app)
+        .put(`/api/beds/${beds.body[0].id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ rentPaise: 800000 });
+
+      expect(overridden.status).toBe(200);
+      expect(overridden.body.rentPaise).toBe(800000);
+      expect(overridden.body.effectiveRentPaise).toBe(800000);
+
+      const after = await request(app)
+        .get(`/api/beds?roomId=${room.body.id}`)
+        .set('Authorization', `Bearer ${token}`);
+      const untouched = after.body.find((b: any) => b.id === beds.body[1].id);
+      expect(untouched.effectiveRentPaise).toBe(950000);
+    });
+
+    it('clears the room rate on an explicit null and leaves it alone when omitted', async () => {
+      const room = await request(app)
+        .post('/api/rooms')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ branchId, roomNumber: '503', floor: 5, bedCount: 1, rentPaise: 950000 });
+
+      // Omitting the key must not wipe the stored rate.
+      const renamed = await request(app)
+        .put(`/api/rooms/${room.body.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ roomNumber: '503A' });
+      expect(renamed.body.rentPaise).toBe(950000);
+
+      const cleared = await request(app)
+        .put(`/api/rooms/${room.body.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ rentPaise: null });
+      expect(cleared.status).toBe(200);
+      expect(cleared.body.rentPaise).toBeNull();
+
+      const beds = await request(app)
+        .get(`/api/beds?roomId=${room.body.id}`)
+        .set('Authorization', `Bearer ${token}`);
+      // Nothing set anywhere — the client falls back to the owner default.
+      expect(beds.body[0].effectiveRentPaise).toBeNull();
+    });
+
+    it('rejects a negative or non-numeric rentPaise', async () => {
+      const negative = await request(app)
+        .post('/api/rooms')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ branchId, roomNumber: '504', floor: 5, rentPaise: -1 });
+      expect(negative.status).toBe(400);
+
+      const garbage = await request(app)
+        .post('/api/rooms')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ branchId, roomNumber: '505', floor: 5, rentPaise: 'abc' });
+      expect(garbage.status).toBe(400);
+    });
+  });
 });

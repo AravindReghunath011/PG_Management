@@ -1,5 +1,13 @@
 import { Schema, model } from 'mongoose';
 
+// How the money reached the Owner. A label for record-keeping only — no
+// gateway integration (see CLAUDE.md "Do NOT").
+// 'deposit' = settled from the security deposit at checkout (not a payment the
+// owner records by hand, so recordPayment doesn't accept it).
+export const PAYMENT_MODES = ['upi', 'cash', 'phonepe', 'bank', 'deposit'] as const;
+export const RECORDABLE_PAYMENT_MODES = ['upi', 'cash', 'phonepe', 'bank'] as const;
+export type PaymentMode = (typeof PAYMENT_MODES)[number];
+
 export interface IPaymentTransaction {
   _id: string; // client/server UUID
   ownerId: string;
@@ -13,6 +21,7 @@ export interface IPaymentTransaction {
   otherPaid: number;
 
   collectedAt: Date; // when the money was actually collected — back-datable
+  paymentMode: PaymentMode | null;
   notes: string | null;
 
   createdAt?: Date;
@@ -33,6 +42,7 @@ const PaymentTransactionSchema = new Schema<IPaymentTransaction>(
     otherPaid: { type: Number, default: 0, min: 0 },
 
     collectedAt: { type: Date, required: true },
+    paymentMode: { type: String, enum: [...PAYMENT_MODES, null], default: null },
     notes: { type: String, default: null },
 
     deletedAt: { type: Date, default: null },

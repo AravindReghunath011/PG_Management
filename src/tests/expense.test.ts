@@ -51,8 +51,19 @@ describe('Expenses CRUD', () => {
     const res = await request(app)
       .post('/api/expenses')
       .set('Authorization', `Bearer ${token}`)
-      .send({ category: 'rent', amount: 500000, date: '2026-08-01T00:00:00.000Z' });
+      .send({ category: 'groceries', amount: 500000, date: '2026-08-01T00:00:00.000Z' });
     expect(res.status).toBe(400);
+  });
+
+  it('accepts the food and rent categories', async () => {
+    for (const category of ['food', 'rent']) {
+      const res = await request(app)
+        .post('/api/expenses')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ category, amount: 340000, date: '2026-08-01T00:00:00.000Z', notes: 'Vegetables & Milk' });
+      expect(res.status).toBe(201);
+      expect(res.body.category).toBe(category);
+    }
   });
 
   it('rejects a non-positive amount', async () => {

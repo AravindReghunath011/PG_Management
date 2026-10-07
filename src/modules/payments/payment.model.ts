@@ -6,6 +6,9 @@ export interface IPayment {
   stayId: string;
   residentId: string;
   dueDate: Date;
+  // "YYYY-MM" on rent dues created automatically each month (see
+  // monthlyDues.ts); null on dues created by hand.
+  dueMonth: string | null;
   paidDate: Date | null;
   status: 'pending' | 'partial' | 'paid';
   
@@ -32,6 +35,7 @@ const PaymentSchema = new Schema<IPayment>(
     stayId: { type: String, required: true, index: true },
     residentId: { type: String, required: true, index: true },
     dueDate: { type: Date, required: true },
+    dueMonth: { type: String, default: null },
     paidDate: { type: Date, default: null },
     status: { type: String, enum: ['pending', 'partial', 'paid'], default: 'pending' },
     
@@ -56,6 +60,12 @@ const PaymentSchema = new Schema<IPayment>(
 
 PaymentSchema.index({ ownerId: 1, stayId: 1, deletedAt: 1 });
 PaymentSchema.index({ ownerId: 1, residentId: 1, deletedAt: 1 });
+// At most one automatic rent due per stay per month (hand-made dues have no
+// dueMonth and aren't constrained).
+PaymentSchema.index(
+  { ownerId: 1, stayId: 1, dueMonth: 1 },
+  { unique: true, partialFilterExpression: { dueMonth: { $type: 'string' } } },
+);
 
 // Ensure status matches due balances on update/save
 PaymentSchema.pre('save', function (this: any, next) {

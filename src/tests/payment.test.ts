@@ -135,6 +135,28 @@ describe('Payment transaction log', () => {
     expect(res.body.error.code).toBe('INVALID_AMOUNT');
   });
 
+  it('stores the payment mode on the transaction', async () => {
+    const res = await request(app)
+      .put(`/api/payments/${paymentId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ rentCollected: 100000, paymentMode: 'upi' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.transaction.paymentMode).toBe('upi');
+    const [transaction] = await PaymentTransaction.find({ paymentId });
+    expect(transaction.paymentMode).toBe('upi');
+  });
+
+  it('rejects an unknown payment mode', async () => {
+    const res = await request(app)
+      .put(`/api/payments/${paymentId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ rentCollected: 100000, paymentMode: 'crypto' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+  });
+
   it('rejects a negative collected amount', async () => {
     const res = await request(app)
       .put(`/api/payments/${paymentId}`)

@@ -27,6 +27,7 @@ import * as uploadController from './modules/uploads/upload.controller';
 import * as reportsController from './modules/reports/reports.controller';
 import * as expenseController from './modules/expenses/expense.controller';
 import * as adminController from './modules/admin/admin.controller';
+import * as notificationsController from './modules/notifications/notifications.controller';
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -40,11 +41,18 @@ if (process.env.NODE_ENV !== 'test') {
 }
 
 // ── Rate limiting ─────────────────────────────────────────────────
+// Counters are per-process and per-IP, so under test every suite shares one
+// budget and a suite that logs in more than `max` times starts getting 429s
+// that have nothing to do with what it is asserting. Skipped in test for the
+// same reason morgan and connectDB are.
+const skipInTest = () => process.env.NODE_ENV === 'test';
+
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 20,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: skipInTest,
   message: { error: { code: 'RATE_LIMITED', message: 'Too many requests. Try again later.' } },
 });
 
@@ -53,6 +61,7 @@ const apiLimiter = rateLimit({
   max: 300,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: skipInTest,
   message: { error: { code: 'RATE_LIMITED', message: 'Too many requests. Try again later.' } },
 });
 
@@ -84,19 +93,29 @@ app.use('/api', apiLimiter);
 app.get('/api/auth/me', authenticateOwner, authController.me);
 app.put('/api/auth/reset-password', authenticateOwner, authController.resetPassword);
 app.put('/api/auth/settings', authenticateOwner, authController.updateSettings);
+app.put('/api/auth/profile', authenticateOwner, authController.updateProfile);
 
 // Dashboard (Protected)
 app.get('/api/dashboard/stats', authenticateOwner, dashboardController.getStats);
+app.get('/api/dashboard/overview', authenticateOwner, dashboardController.getOverview);
+
+// Notifications (Protected): derived from the owner's data on every read
+app.get('/api/notifications', authenticateOwner, notificationsController.getNotifications);
+app.put('/api/notifications/seen', authenticateOwner, notificationsController.markNotificationsSeen);
 
 // Admin (Protected — superadmin only): platform-wide owner list/detail
 app.get('/api/admin/owners', authenticateOwner, authenticateSuperAdmin, adminController.getOwners);
 app.post('/api/admin/owners', authenticateOwner, authenticateSuperAdmin, adminController.createOwner);
 app.get('/api/admin/owners/:id', authenticateOwner, authenticateSuperAdmin, adminController.getOwnerById);
+app.put('/api/admin/owners/:id', authenticateOwner, authenticateSuperAdmin, adminController.updateOwner);
+app.post('/api/admin/owners/:id/reset-password', authenticateOwner, authenticateSuperAdmin, adminController.resetOwnerPassword);
 
 // Reports (Protected)
 app.get('/api/reports/joinees', authenticateOwner, reportsController.getJoineesReport);
 app.get('/api/reports/collections', authenticateOwner, reportsController.getCollectionsReport);
+app.get('/api/reports/collection-summary', authenticateOwner, reportsController.getCollectionSummaryReport);
 app.get('/api/reports/finance', authenticateOwner, reportsController.getFinanceReport);
+app.get('/api/reports/profit-loss', authenticateOwner, reportsController.getProfitLossReport);
 app.get('/api/reports/food-preference', authenticateOwner, reportsController.getFoodPreferenceReport);
 
 // Expenses CRUD (supports ?from= ?to= ?branchId= ?category= filters)
@@ -146,7 +165,10 @@ app.get('/api/stays', authenticateOwner, stayController.getStays);
 app.get('/api/stays/:id', authenticateOwner, stayController.getStayById);
 app.post('/api/stays', authenticateOwner, enforceOwnerBodyScope, stayController.checkInResident);
 app.put('/api/stays/:id', authenticateOwner, stayController.updateStay);
+app.get('/api/stays/:id/settlement-preview', authenticateOwner, stayController.getSettlementPreview);
 app.put('/api/stays/:id/checkout', authenticateOwner, stayController.checkOutResident);
+app.put('/api/stays/:id/notice', authenticateOwner, stayController.giveNotice);
+app.delete('/api/stays/:id/notice', authenticateOwner, stayController.cancelNotice);
 
 // Rent & Payments (supports ?stayId= ?residentId= ?status= filters)
 app.get('/api/payments', authenticateOwner, paymentController.getPayments);

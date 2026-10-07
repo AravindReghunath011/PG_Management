@@ -7,6 +7,18 @@ export interface IStay {
   bedId: string;
   checkInDate: Date;
   checkOutDate: Date | null;
+  // Planned move-out while the resident still occupies the bed (notice
+  // period). The bed stays occupied until checkout sets checkOutDate.
+  noticeMoveOutDate: Date | null;
+  // Recorded at checkout: deductions from the deposit and the refund (paise).
+  depositSettlement: {
+    deductions: { kind: 'rent' | 'damage' | 'cleaning' | 'other'; label: string; amount: number }[];
+    totalDeductions: number;
+    refundAmount: number;
+    refundMode: 'upi' | 'cash' | 'phonepe' | 'bank' | null;
+    notes: string | null;
+    settledAt: Date;
+  } | null;
   monthlyRent: number; // In paise
   securityDeposit: number; // In paise
   createdAt?: Date;
@@ -22,6 +34,30 @@ const StaySchema = new Schema<IStay>(
     bedId: { type: String, required: true, index: true },
     checkInDate: { type: Date, required: true },
     checkOutDate: { type: Date, default: null },
+    noticeMoveOutDate: { type: Date, default: null },
+    depositSettlement: {
+      type: new Schema(
+        {
+          deductions: [
+            new Schema(
+              {
+                kind: { type: String, enum: ['rent', 'damage', 'cleaning', 'other'], required: true },
+                label: { type: String, required: true },
+                amount: { type: Number, required: true, min: 0 },
+              },
+              { _id: false },
+            ),
+          ],
+          totalDeductions: { type: Number, required: true, min: 0 },
+          refundAmount: { type: Number, required: true, min: 0 },
+          refundMode: { type: String, enum: ['upi', 'cash', 'phonepe', 'bank', null], default: null },
+          notes: { type: String, default: null },
+          settledAt: { type: Date, required: true },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
     monthlyRent: { type: Number, required: true },
     securityDeposit: { type: Number, required: true },
     deletedAt: { type: Date, default: null },

@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import { Owner } from '../modules/auth/owner.model';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'superSecretOwnerTokenKey123!';
 
@@ -12,7 +13,7 @@ export interface AuthenticatedRequest extends Request {
   ownerId?: string;
 }
 
-export const authenticateOwner = (
+export const authenticateOwner = async (
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
@@ -32,6 +33,30 @@ export const authenticateOwner = (
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as { id: string; email: string; role: 'owner' | 'superadmin' };
+
+    // Tokens live 7 days, so deactivation would otherwise not take effect until
+    // the token expired. One primary-key lookup per request keeps it immediate
+    // and also rejects tokens for an owner document that no longer exists.
+    const owner = await Owner.findById(decoded.id).select('isActive').lean();
+    if (!owner) {
+      return res.status(401).json({
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Access denied. Invalid or expired token.'
+        }
+      });
+    }
+    // `=== false` on purpose — owners created before isActive existed have it
+    // undefined and must keep working.
+    if (owner.isActive === false) {
+      return res.status(403).json({
+        error: {
+          code: 'ACCOUNT_DEACTIVATED',
+          message: 'This account has been deactivated. Contact your administrator.'
+        }
+      });
+    }
+
     req.owner = decoded;
     req.ownerId = decoded.id;
     next();

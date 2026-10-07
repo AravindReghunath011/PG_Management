@@ -6,6 +6,9 @@ export interface IBed {
   roomId: string;
   bedNumber: string;
   status: 'vacant' | 'occupied';
+  // Per-bed rent override in paise. null = inherit the room's rentPaise, which
+  // in turn falls back to the owner's defaultRentPaise.
+  rentPaise: number | null;
   createdAt?: Date;
   updatedAt?: Date;
   deletedAt: Date | null;
@@ -18,6 +21,7 @@ const BedSchema = new Schema<IBed>(
     roomId: { type: String, required: true, index: true },
     bedNumber: { type: String, required: true },
     status: { type: String, enum: ['vacant', 'occupied'], default: 'vacant' },
+    rentPaise: { type: Number, default: null },
     deletedAt: { type: Date, default: null },
   },
   {

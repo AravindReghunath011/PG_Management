@@ -262,4 +262,247 @@ describe('Admin owner onboarding', () => {
 
     expect(res.status).toBe(400);
   });
+
+  describe('editing an owner', () => {
+    it('updates name, email and phone', async () => {
+      const superToken = await createSuperAdmin();
+      const created = await request(app)
+        .post('/api/admin/owners')
+        .set('Authorization', `Bearer ${superToken}`)
+        .send({ name: 'Old Name', email: 'edit-me@example.com' });
+
+      const res = await request(app)
+        .put(`/api/admin/owners/${created.body.owner.id}`)
+        .set('Authorization', `Bearer ${superToken}`)
+        .send({ name: 'New Name', email: 'NEW-Email@Example.com', phoneNumber: '9876543210' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.owner).toMatchObject({
+        name: 'New Name',
+        email: 'new-email@example.com', // normalized
+        phoneNumber: '9876543210',
+        isActive: true,
+      });
+    });
+
+    it('lets the owner log in with the new email and not the old one', async () => {
+      const superToken = await createSuperAdmin();
+      const created = await request(app)
+        .post('/api/admin/owners')
+        .set('Authorization', `Bearer ${superToken}`)
+        .send({ name: 'Mover', email: 'before@example.com' });
+      const tempPassword = created.body.tempPassword;
+
+      await request(app)
+        .put(`/api/admin/owners/${created.body.owner.id}`)
+        .set('Authorization', `Bearer ${superToken}`)
+        .send({ email: 'after@example.com' });
+
+      const oldEmail = await request(app)
+        .post('/api/auth/login')
+        .send({ email: 'before@example.com', password: tempPassword });
+      expect(oldEmail.status).toBe(401);
+
+      const newEmail = await request(app)
+        .post('/api/auth/login')
+        .send({ email: 'after@example.com', password: tempPassword });
+      expect(newEmail.status).toBe(200);
+    });
+
+    it('rejects an email already taken by another owner', async () => {
+      const superToken = await createSuperAdmin();
+      await request(app)
+        .post('/api/admin/owners')
+        .set('Authorization', `Bearer ${superToken}`)
+        .send({ name: 'Taken', email: 'taken@example.com' });
+      const second = await request(app)
+        .post('/api/admin/owners')
+        .set('Authorization', `Bearer ${superToken}`)
+        .send({ name: 'Other', email: 'other@example.com' });
+
+      const res = await request(app)
+        .put(`/api/admin/owners/${second.body.owner.id}`)
+        .set('Authorization', `Bearer ${superToken}`)
+        .send({ email: 'taken@example.com' });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('refuses to edit a superadmin', async () => {
+      const superToken = await createSuperAdmin();
+      const superAdmin = await Owner.findOne({ role: 'superadmin' });
+
+      const res = await request(app)
+        .put(`/api/admin/owners/${superAdmin!._id}`)
+        .set('Authorization', `Bearer ${superToken}`)
+        .send({ name: 'Renamed Admin' });
+
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe('deactivating an owner', () => {
+    it('blocks login and revokes an already-issued token, then restores both', async () => {
+      const superToken = await createSuperAdmin();
+      const created = await request(app)
+        .post('/api/admin/owners')
+        .set('Authorization', `Bearer ${superToken}`)
+        .send({ name: 'Suspended', email: 'suspended@example.com' });
+      const ownerId = created.body.owner.id;
+      const tempPassword = created.body.tempPassword;
+
+      const login = await request(app)
+        .post('/api/auth/login')
+        .send({ email: 'suspended@example.com', password: tempPassword });
+      expect(login.status).toBe(200);
+      const ownerToken = login.body.token;
+
+      const deactivated = await request(app)
+        .put(`/api/admin/owners/${ownerId}`)
+        .set('Authorization', `Bearer ${superToken}`)
+        .send({ isActive: false });
+      expect(deactivated.status).toBe(200);
+      expect(deactivated.body.owner.isActive).toBe(false);
+
+      // Fresh login is refused...
+      const reLogin = await request(app)
+        .post('/api/auth/login')
+        .send({ email: 'suspended@example.com', password: tempPassword });
+      expect(reLogin.status).toBe(403);
+      expect(reLogin.body.error.code).toBe('ACCOUNT_DEACTIVATED');
+
+      // ...and the token issued before deactivation stops working immediately,
+      // rather than lasting until its 7-day expiry.
+      const withOldToken = await request(app)
+        .get('/api/branches')
+        .set('Authorization', `Bearer ${ownerToken}`);
+      expect(withOldToken.status).toBe(403);
+      expect(withOldToken.body.error.code).toBe('ACCOUNT_DEACTIVATED');
+
+      const reactivated = await request(app)
+        .put(`/api/admin/owners/${ownerId}`)
+        .set('Authorization', `Bearer ${superToken}`)
+        .send({ isActive: true });
+      expect(reactivated.body.owner.isActive).toBe(true);
+
+      const finalLogin = await request(app)
+        .post('/api/auth/login')
+        .send({ email: 'suspended@example.com', password: tempPassword });
+      expect(finalLogin.status).toBe(200);
+    });
+
+    it('keeps the deactivated owner\'s data intact', async () => {
+      const superToken = await createSuperAdmin();
+      const created = await request(app)
+        .post('/api/admin/owners')
+        .set('Authorization', `Bearer ${superToken}`)
+        .send({ name: 'Has Data', email: 'has-data@example.com' });
+      const ownerId = created.body.owner.id;
+
+      const login = await request(app)
+        .post('/api/auth/login')
+        .send({ email: 'has-data@example.com', password: created.body.tempPassword });
+      await request(app)
+        .post('/api/branches')
+        .set('Authorization', `Bearer ${login.body.token}`)
+        .send({ name: 'Still Here', address: '1 Kept St' });
+
+      await request(app)
+        .put(`/api/admin/owners/${ownerId}`)
+        .set('Authorization', `Bearer ${superToken}`)
+        .send({ isActive: false });
+
+      const detail = await request(app)
+        .get(`/api/admin/owners/${ownerId}`)
+        .set('Authorization', `Bearer ${superToken}`);
+      expect(detail.body.owner.branchCount).toBe(1);
+      expect(await Branch.countDocuments({ ownerId, deletedAt: null })).toBe(1);
+    });
+
+    it('rejects a non-boolean isActive', async () => {
+      const superToken = await createSuperAdmin();
+      const created = await request(app)
+        .post('/api/admin/owners')
+        .set('Authorization', `Bearer ${superToken}`)
+        .send({ name: 'Bool Check', email: 'bool-check@example.com' });
+
+      const res = await request(app)
+        .put(`/api/admin/owners/${created.body.owner.id}`)
+        .set('Authorization', `Bearer ${superToken}`)
+        .send({ isActive: 'nope' });
+
+      expect(res.status).toBe(400);
+    });
+  });
+
+  describe('resetting an owner password', () => {
+    it('issues a working temp password, invalidates the old one and forces a reset', async () => {
+      const superToken = await createSuperAdmin();
+      const created = await request(app)
+        .post('/api/admin/owners')
+        .set('Authorization', `Bearer ${superToken}`)
+        .send({ name: 'Forgetful', email: 'forgetful@example.com' });
+      const oldPassword = created.body.tempPassword;
+
+      // Set a known password so mustResetPassword goes back to false first.
+      const firstLogin = await request(app)
+        .post('/api/auth/login')
+        .send({ email: 'forgetful@example.com', password: oldPassword });
+      await request(app)
+        .put('/api/auth/reset-password')
+        .set('Authorization', `Bearer ${firstLogin.body.token}`)
+        .send({ newPassword: 'chosenByOwner1' });
+
+      const res = await request(app)
+        .post(`/api/admin/owners/${created.body.owner.id}/reset-password`)
+        .set('Authorization', `Bearer ${superToken}`);
+
+      expect(res.status).toBe(200);
+      expect(typeof res.body.tempPassword).toBe('string');
+      expect(res.body.tempPassword.length).toBeGreaterThan(8);
+      expect(res.body.owner.mustResetPassword).toBe(true);
+
+      const withOld = await request(app)
+        .post('/api/auth/login')
+        .send({ email: 'forgetful@example.com', password: 'chosenByOwner1' });
+      expect(withOld.status).toBe(401);
+
+      const withNew = await request(app)
+        .post('/api/auth/login')
+        .send({ email: 'forgetful@example.com', password: res.body.tempPassword });
+      expect(withNew.status).toBe(200);
+      expect(withNew.body.owner.mustResetPassword).toBe(true);
+    });
+
+    it('refuses to reset a superadmin password', async () => {
+      const superToken = await createSuperAdmin();
+      const superAdmin = await Owner.findOne({ role: 'superadmin' });
+
+      const res = await request(app)
+        .post(`/api/admin/owners/${superAdmin!._id}/reset-password`)
+        .set('Authorization', `Bearer ${superToken}`);
+
+      expect(res.status).toBe(403);
+    });
+
+    it('rejects a regular owner calling it', async () => {
+      const superToken = await createSuperAdmin();
+      const target = await request(app)
+        .post('/api/admin/owners')
+        .set('Authorization', `Bearer ${superToken}`)
+        .send({ name: 'Target', email: 'reset-target@example.com' });
+
+      const attacker = await request(app).post('/api/auth/signup').send({
+        name: 'Attacker',
+        email: 'attacker@example.com',
+        password: 'password123',
+      });
+
+      const res = await request(app)
+        .post(`/api/admin/owners/${target.body.owner.id}/reset-password`)
+        .set('Authorization', `Bearer ${attacker.body.token}`);
+
+      expect(res.status).toBe(403);
+    });
+  });
 });

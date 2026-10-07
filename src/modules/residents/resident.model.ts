@@ -8,7 +8,13 @@ export interface IResident {
   email: string | null;
   kycType: 'Aadhaar' | 'Passport' | 'DL' | 'Other';
   kycRef: string;
-  kycImageUrl: string | null;
+  kycImageUrl: string | null; // front side
+  kycBackImageUrl: string | null;
+  photoUrl: string | null;
+  // Parent / emergency contact — all optional.
+  guardianName: string | null;
+  guardianPhone: string | null;
+  guardianRelation: string | null;
   foodPreference: 'with_food' | 'without_food';
   createdAt?: Date;
   updatedAt?: Date;
@@ -25,6 +31,11 @@ const ResidentSchema = new Schema<IResident>(
     kycType: { type: String, enum: ['Aadhaar', 'Passport', 'DL', 'Other'], required: true },
     kycRef: { type: String, required: true },
     kycImageUrl: { type: String, default: null },
+    kycBackImageUrl: { type: String, default: null },
+    photoUrl: { type: String, default: null },
+    guardianName: { type: String, default: null },
+    guardianPhone: { type: String, default: null },
+    guardianRelation: { type: String, default: null },
     foodPreference: { type: String, enum: ['with_food', 'without_food'], default: 'with_food' },
     deletedAt: { type: Date, default: null },
   },

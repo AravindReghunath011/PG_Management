@@ -5,6 +5,8 @@ import { Bed } from '../beds/bed.model';
 import { Resident } from '../residents/resident.model';
 import { Room } from '../rooms/room.model';
 import { v4 as uuidv4 } from 'uuid';
+import { ensureMonthlyDues, voidAutoDuesFrom } from '../payments/monthlyDues';
+import { openDues, parseSettlement, settleDeposit } from './depositSettlement';
 
 function toStayResponse(
   stay: IStay,
@@ -20,6 +22,8 @@ function toStayResponse(
     bedLabel: extras?.bedLabel ?? null,
     checkInDate: stay.checkInDate,
     checkOutDate: stay.checkOutDate,
+    noticeMoveOutDate: stay.noticeMoveOutDate ?? null,
+    depositSettlement: stay.depositSettlement ?? null,
     monthlyRent: stay.monthlyRent,
     securityDeposit: stay.securityDeposit,
     createdAt: stay.createdAt,
@@ -159,6 +163,8 @@ export const checkInResident = async (req: AuthenticatedRequest, res: Response) 
     bed.status = 'occupied';
     await bed.save();
 
+    await ensureMonthlyDues(ownerId, new Date(), new Date());
+
     const [enriched] = await enrichStays(ownerId, [stay]);
     return res.status(201).json(enriched);
   } catch (error: any) {
@@ -183,8 +189,13 @@ export const checkInResident = async (req: AuthenticatedRequest, res: Response) 
 export const checkOutResident = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const { checkOutDate } = req.body;
+    const { checkOutDate, settlement } = req.body;
     const ownerId = req.ownerId!;
+
+    const parsedSettlement = settlement !== undefined && settlement !== null ? parseSettlement(settlement) : null;
+    if (parsedSettlement && 'error' in parsedSettlement) {
+      return res.status(400).json({ error: { code: 'BAD_REQUEST', message: parsedSettlement.error } });
+    }
 
     if (!checkOutDate) {
       return res.status(400).json({
@@ -221,6 +232,17 @@ export const checkOutResident = async (req: AuthenticatedRequest, res: Response)
       });
     }
 
+    // Every month of the stay up to move-out is owed; later dues aren't.
+    await ensureMonthlyDues(ownerId, stay.checkInDate, checkoutTime, new Date(), { stayId: stay._id });
+    await voidAutoDuesFrom(ownerId, stay._id, checkoutTime);
+    if (parsedSettlement) {
+      const settled = await settleDeposit(ownerId, stay, checkoutTime, parsedSettlement.value);
+      if ('error' in settled) {
+        return res.status(400).json({ error: { code: 'INVALID_SETTLEMENT', message: settled.error } });
+      }
+      stay.depositSettlement = settled.value;
+    }
+
     stay.checkOutDate = checkoutTime;
     await stay.save();
 
@@ -247,13 +269,40 @@ export const updateStay = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const ownerId = req.ownerId!;
     const { id } = req.params;
-    const { monthlyRent, securityDeposit } = req.body;
+    const { monthlyRent, securityDeposit, checkInDate } = req.body;
 
     const stay = await Stay.findOne({ _id: id, ownerId, deletedAt: null });
     if (!stay) {
       return res.status(404).json({
         error: { code: 'NOT_FOUND', message: 'Stay not found.' },
       });
+    }
+
+    if (checkInDate !== undefined) {
+      // Correcting a data-entry mistake on the still-open stay only — never
+      // touch bedId here (that would silently rewrite occupancy history,
+      // which CLAUDE.md's non-negotiable rules forbid). A checked-out stay's
+      // dates are permanent history and stay untouched.
+      if (stay.checkOutDate) {
+        return res.status(400).json({
+          error: {
+            code: 'BAD_REQUEST',
+            message: 'Cannot change the check-in date of a closed stay.',
+          },
+        });
+      }
+      const parsedDate = new Date(checkInDate);
+      if (isNaN(parsedDate.getTime())) {
+        return res.status(400).json({
+          error: { code: 'BAD_REQUEST', message: 'checkInDate must be a valid date.' },
+        });
+      }
+      if (parsedDate > new Date()) {
+        return res.status(400).json({
+          error: { code: 'BAD_REQUEST', message: 'checkInDate cannot be in the future.' },
+        });
+      }
+      stay.checkInDate = parsedDate;
     }
 
     if (monthlyRent !== undefined) {
@@ -330,5 +379,108 @@ export const getStayById = async (req: AuthenticatedRequest, res: Response) => {
     return res.status(500).json({
       error: { code: 'SERVER_ERROR', message: 'Error retrieving stay.' },
     });
+  }
+};
+
+/**
+ * Records a notice period: the resident plans to move out on `moveOutDate`
+ * but keeps the bed until checkout. Replaces any earlier notice.
+ */
+export const giveNotice = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const ownerId = req.ownerId!;
+    const { id } = req.params;
+    const moveOut = new Date(req.body?.moveOutDate);
+
+    if (!req.body?.moveOutDate || Number.isNaN(moveOut.getTime())) {
+      return res.status(400).json({
+        error: { code: 'BAD_REQUEST', message: 'moveOutDate must be a valid date.' },
+      });
+    }
+
+    const stay = await Stay.findOne({ _id: id, ownerId, deletedAt: null });
+    if (!stay) {
+      return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Stay not found.' } });
+    }
+    if (stay.checkOutDate !== null) {
+      return res.status(400).json({
+        error: { code: 'ALREADY_CHECKED_OUT', message: 'This stay is already checked out.' },
+      });
+    }
+    if (moveOut < stay.checkInDate) {
+      return res.status(400).json({
+        error: { code: 'INVALID_NOTICE_DATE', message: 'Move-out date cannot be before check-in.' },
+      });
+    }
+
+    stay.noticeMoveOutDate = moveOut;
+    await stay.save();
+    await voidAutoDuesFrom(ownerId, stay._id, moveOut);
+    const [enriched] = await enrichStays(ownerId, [stay]);
+    return res.status(200).json(enriched);
+  } catch (error) {
+    console.error('Give notice error:', error);
+    return res.status(500).json({
+      error: { code: 'SERVER_ERROR', message: 'Error recording notice.' },
+    });
+  }
+};
+
+/** Withdraws a notice period; the resident stays on. */
+export const cancelNotice = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const ownerId = req.ownerId!;
+    const stay = await Stay.findOne({ _id: req.params.id, ownerId, deletedAt: null });
+    if (!stay) {
+      return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Stay not found.' } });
+    }
+    if (stay.checkOutDate !== null) {
+      return res.status(400).json({
+        error: { code: 'ALREADY_CHECKED_OUT', message: 'This stay is already checked out.' },
+      });
+    }
+
+    stay.noticeMoveOutDate = null;
+    await stay.save();
+    const [enriched] = await enrichStays(ownerId, [stay]);
+    return res.status(200).json(enriched);
+  } catch (error) {
+    console.error('Cancel notice error:', error);
+    return res.status(500).json({
+      error: { code: 'SERVER_ERROR', message: 'Error cancelling notice.' },
+    });
+  }
+};
+
+/**
+ * What a checkout on `date` would settle: deposit held and rent still owed
+ * on dues before that date — used to prefill the vacate & settle screen.
+ */
+export const getSettlementPreview = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const ownerId = req.ownerId!;
+    const stay = await Stay.findOne({ _id: req.params.id, ownerId, deletedAt: null });
+    if (!stay) {
+      return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Stay not found.' } });
+    }
+    const date = req.query.date ? new Date(req.query.date as string) : new Date();
+    if (Number.isNaN(date.getTime())) {
+      return res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'date must be a valid date.' } });
+    }
+    // The whole stay, so earlier unpaid months count too (this stay only).
+    await ensureMonthlyDues(ownerId, stay.checkInDate, date, new Date(), { stayId: stay._id });
+    const { dues, balance } = await openDues(ownerId, stay._id, date);
+    return res.status(200).json({
+      securityDeposit: stay.securityDeposit,
+      pendingRent: balance,
+      openDues: dues.map((d) => ({
+        id: d._id,
+        dueDate: d.dueDate,
+        balance: Math.max(d.rentDue + d.electricityDue + d.otherDue - (d.rentPaid + d.electricityPaid + d.otherPaid), 0),
+      })),
+    });
+  } catch (error) {
+    console.error('Settlement preview error:', error);
+    return res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Error preparing settlement.' } });
   }
 };

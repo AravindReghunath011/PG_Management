@@ -1,12 +1,13 @@
 import { Response } from 'express';
 import { AuthenticatedRequest, scopeOwnerId } from '../../middleware/auth';
 import { Payment, IPayment } from './payment.model';
-import { PaymentTransaction } from './paymentTransaction.model';
+import { PaymentTransaction, RECORDABLE_PAYMENT_MODES } from './paymentTransaction.model';
 import { Stay } from '../stays/stay.model';
 import { Resident } from '../residents/resident.model';
 import { Bed } from '../beds/bed.model';
 import { Room } from '../rooms/room.model';
 import { v4 as uuidv4 } from 'uuid';
+import { ensureMonthlyDues, monthKeyOf } from './monthlyDues';
 
 function parseAmountPaise(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return Math.round(value);
@@ -22,7 +23,11 @@ function toPaymentResponse(
   payment: IPayment,
   extras?: {
     residentName?: string | null;
+    residentPhone?: string | null;
     bedLabel?: string | null;
+    roomNumber?: string | null;
+    bedNumber?: string | null;
+    branchId?: string | null;
   }
 ) {
   const totalDue =
@@ -41,7 +46,11 @@ function toPaymentResponse(
     stayId: payment.stayId,
     residentId: payment.residentId,
     residentName: extras?.residentName ?? null,
+    residentPhone: extras?.residentPhone ?? null,
     bedLabel: extras?.bedLabel ?? null,
+    roomNumber: extras?.roomNumber ?? null,
+    bedNumber: extras?.bedNumber ?? null,
+    branchId: extras?.branchId ?? null,
     dueDate: payment.dueDate,
     paidDate: payment.paidDate,
     status: payment.status,
@@ -85,9 +94,14 @@ async function enrichPayments(ownerId: string | undefined, payments: IPayment[])
     const room = bed ? roomById.get(bed.roomId) : undefined;
     const bedLabel =
       room && bed ? `${room.roomNumber}-${bed.bedNumber}` : null;
+    const resident = residentById.get(p.residentId);
     return toPaymentResponse(p, {
-      residentName: residentById.get(p.residentId)?.name ?? null,
+      residentName: resident?.name ?? null,
+      residentPhone: resident?.phone ?? null,
       bedLabel,
+      roomNumber: room?.roomNumber ?? null,
+      bedNumber: bed?.bedNumber ?? null,
+      branchId: room?.branchId ?? null,
     });
   });
 }
@@ -118,17 +132,26 @@ export const generateDue = async (req: AuthenticatedRequest, res: Response) => {
       });
     }
 
-    const payment = new Payment({
-      _id: id || uuidv4(),
+    // If this month's due was already created automatically and nothing has
+    // been paid on it, set it from this request instead of adding a second
+    // due for the same month.
+    const autoDue = await Payment.findOne({
       ownerId,
       stayId,
-      residentId: stay.residentId,
-      dueDate: new Date(dueDate),
-      rentDue: rent,
-      electricityDue: electricity,
-      otherDue: other,
-      notes: notes ?? null,
+      dueMonth: monthKeyOf(new Date(dueDate)),
+      deletedAt: null,
+      rentPaid: 0,
+      electricityPaid: 0,
+      otherPaid: 0,
     });
+    const payment =
+      autoDue ??
+      new Payment({ _id: id || uuidv4(), ownerId, stayId, residentId: stay.residentId });
+    payment.dueDate = new Date(dueDate);
+    payment.rentDue = rent;
+    payment.electricityDue = electricity;
+    payment.otherDue = other;
+    payment.notes = notes ?? null;
 
     await payment.save();
     const [enriched] = await enrichPayments(ownerId, [payment]);
@@ -147,7 +170,7 @@ export const generateDue = async (req: AuthenticatedRequest, res: Response) => {
 export const recordPayment = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const { rentCollected, electricityCollected, otherCollected, collectedAt, notes } = req.body;
+    const { rentCollected, electricityCollected, otherCollected, collectedAt, paymentMode, notes } = req.body;
     const ownerId = req.ownerId!;
 
     const rentDelta = rentCollected !== undefined ? parseAmountPaise(rentCollected) : 0;
@@ -170,6 +193,12 @@ export const recordPayment = async (req: AuthenticatedRequest, res: Response) =>
       });
     }
 
+    if (paymentMode != null && !(RECORDABLE_PAYMENT_MODES as readonly string[]).includes(paymentMode)) {
+      return res.status(400).json({
+        error: { code: 'BAD_REQUEST', message: `paymentMode must be one of: ${RECORDABLE_PAYMENT_MODES.join(', ')}.` },
+      });
+    }
+
     const payment = await Payment.findOne({ _id: id, ownerId, deletedAt: null });
     if (!payment) {
       return res.status(404).json({
@@ -189,6 +218,7 @@ export const recordPayment = async (req: AuthenticatedRequest, res: Response) =>
       electricityPaid: electricityDelta,
       otherPaid: otherDelta,
       collectedAt: collectedDate,
+      paymentMode: paymentMode ?? null,
       notes: notes ?? null,
     });
     await transaction.save();
@@ -208,6 +238,7 @@ export const recordPayment = async (req: AuthenticatedRequest, res: Response) =>
         electricityPaid: transaction.electricityPaid,
         otherPaid: transaction.otherPaid,
         collectedAt: transaction.collectedAt,
+        paymentMode: transaction.paymentMode,
       },
     });
   } catch (error) {
@@ -221,8 +252,22 @@ export const recordPayment = async (req: AuthenticatedRequest, res: Response) =>
 export const getPayments = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const ownerId = scopeOwnerId(req);
-    const { stayId, residentId, status } = req.query;
+    const { stayId, residentId, status, from, to } = req.query;
+
+    // Optional dueDate window (e.g. one month for the collection board).
+    const fromDate = from ? new Date(from as string) : null;
+    const toDate = to ? new Date(to as string) : null;
+    if ((fromDate && Number.isNaN(fromDate.getTime())) || (toDate && Number.isNaN(toDate.getTime()))) {
+      return res.status(400).json({
+        error: { code: 'BAD_REQUEST', message: 'from and to must be valid dates.' },
+      });
+    }
+
+    if (ownerId) await ensureMonthlyDues(ownerId, fromDate ?? new Date(), toDate ?? new Date());
     const filter: Record<string, unknown> = { deletedAt: null };
+    if (fromDate || toDate) {
+      filter.dueDate = { ...(fromDate ? { $gte: fromDate } : {}), ...(toDate ? { $lte: toDate } : {}) };
+    }
     if (ownerId) filter.ownerId = ownerId;
     if (stayId) filter.stayId = stayId;
     if (residentId) filter.residentId = residentId;

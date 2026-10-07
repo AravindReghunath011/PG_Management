@@ -43,13 +43,33 @@ function generateTempPassword(length = 12): string {
   return password;
 }
 
-function toOwnerSummary(owner: { _id: string; name: string; email: string; role: string; createdAt?: Date }, stats: OwnerStats) {
+// Columns every owner-shaped response selects. Kept in one place so adding a
+// field does not mean hunting through four handlers.
+const OWNER_FIELDS = '_id name email phoneNumber role isActive mustResetPassword createdAt';
+
+function toOwnerSummary(
+  owner: {
+    _id: string;
+    name: string;
+    email: string;
+    phoneNumber?: string;
+    role: string;
+    isActive?: boolean;
+    mustResetPassword?: boolean;
+    createdAt?: Date;
+  },
+  stats: OwnerStats
+) {
   const occupancyRate = stats.totalBeds > 0 ? Math.round((stats.occupiedBeds / stats.totalBeds) * 100) : 0;
   return {
     id: owner._id,
     name: owner.name,
     email: owner.email,
+    phoneNumber: owner.phoneNumber ?? null,
     role: owner.role,
+    // Owners predating the isActive field are active.
+    isActive: owner.isActive !== false,
+    mustResetPassword: owner.mustResetPassword ?? false,
     createdAt: owner.createdAt,
     ...stats,
     occupancyRate,
@@ -110,7 +130,7 @@ async function getStatsByOwnerIds(ownerIds: string[]): Promise<Map<string, Owner
 
 export const getOwners = async (_req: AuthenticatedRequest, res: Response) => {
   try {
-    const owners = await Owner.find({}).select('_id name email role createdAt').sort({ createdAt: -1 });
+    const owners = await Owner.find({}).select(OWNER_FIELDS).sort({ createdAt: -1 });
     const statsMap = await getStatsByOwnerIds(owners.map((o) => o._id));
 
     return res.status(200).json({
@@ -182,7 +202,7 @@ export const createOwner = async (req: AuthenticatedRequest, res: Response) => {
 export const getOwnerById = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const owner = await Owner.findById(id).select('_id name email role createdAt');
+    const owner = await Owner.findById(id).select(OWNER_FIELDS);
     if (!owner) {
       return res.status(404).json({
         error: { code: 'NOT_FOUND', message: 'Owner not found.' },
@@ -197,6 +217,143 @@ export const getOwnerById = async (req: AuthenticatedRequest, res: Response) => 
     console.error('getOwnerById error:', error);
     return res.status(500).json({
       error: { code: 'SERVER_ERROR', message: 'Error retrieving owner.' },
+    });
+  }
+};
+
+// Edits an owner's identity fields and/or flips their access switch. Deliberately
+// cannot change `role`, cannot touch passwordHash, and refuses to act on a
+// superadmin — promoting or locking out an admin is not a routine edit.
+export const updateOwner = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { name, email, phoneNumber, isActive } = req.body;
+
+    const owner = await Owner.findById(id);
+    if (!owner) {
+      return res.status(404).json({
+        error: { code: 'NOT_FOUND', message: 'Owner not found.' },
+      });
+    }
+
+    if (owner.role === 'superadmin') {
+      return res.status(403).json({
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Superadmin accounts cannot be edited here.',
+        },
+      });
+    }
+
+    if (name !== undefined) {
+      const trimmedName = typeof name === 'string' ? name.trim() : '';
+      if (!trimmedName) {
+        return res.status(400).json({
+          error: { code: 'BAD_REQUEST', message: 'name cannot be empty.' },
+        });
+      }
+      owner.name = trimmedName;
+    }
+
+    if (email !== undefined) {
+      const normalizedEmail = typeof email === 'string' ? email.toLowerCase().trim() : '';
+      if (!normalizedEmail || !normalizedEmail.includes('@')) {
+        return res.status(400).json({
+          error: { code: 'BAD_REQUEST', message: 'A valid email is required.' },
+        });
+      }
+      if (normalizedEmail !== owner.email) {
+        const clash = await Owner.findOne({ email: normalizedEmail, _id: { $ne: owner._id } });
+        if (clash) {
+          return res.status(400).json({
+            error: { code: 'BAD_REQUEST', message: 'An account with this email already exists.' },
+          });
+        }
+        owner.email = normalizedEmail;
+      }
+    }
+
+    if (phoneNumber !== undefined) {
+      const trimmedPhone = typeof phoneNumber === 'string' ? phoneNumber.trim() : '';
+      if (trimmedPhone === '') {
+        // Must be unset rather than stored as '', or the sparse unique index
+        // would reject a second owner with a blank phone.
+        owner.phoneNumber = undefined;
+      } else {
+        const clash = await Owner.findOne({ phoneNumber: trimmedPhone, _id: { $ne: owner._id } });
+        if (clash) {
+          return res.status(400).json({
+            error: { code: 'BAD_REQUEST', message: 'An account with this phone number already exists.' },
+          });
+        }
+        owner.phoneNumber = trimmedPhone;
+      }
+    }
+
+    if (isActive !== undefined) {
+      if (typeof isActive !== 'boolean') {
+        return res.status(400).json({
+          error: { code: 'BAD_REQUEST', message: 'isActive must be a boolean.' },
+        });
+      }
+      owner.isActive = isActive;
+    }
+
+    await owner.save();
+
+    const statsMap = await getStatsByOwnerIds([owner._id]);
+    return res.status(200).json({
+      owner: toOwnerSummary(owner, statsMap.get(owner._id) ?? emptyStats()),
+    });
+  } catch (error) {
+    console.error('updateOwner error:', error);
+    return res.status(500).json({
+      error: { code: 'SERVER_ERROR', message: 'Error updating owner.' },
+    });
+  }
+};
+
+// Issues a fresh temp password and forces a reset on next login. Same shape as
+// onboarding: the password is returned once and relayed manually.
+export const resetOwnerPassword = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const owner = await Owner.findById(id);
+    if (!owner) {
+      return res.status(404).json({
+        error: { code: 'NOT_FOUND', message: 'Owner not found.' },
+      });
+    }
+
+    if (owner.role === 'superadmin') {
+      return res.status(403).json({
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Superadmin passwords cannot be reset here.',
+        },
+      });
+    }
+
+    const tempPassword = generateTempPassword();
+    owner.passwordHash = await bcrypt.hash(tempPassword, 10);
+    owner.mustResetPassword = true;
+    await owner.save();
+
+    return res.status(200).json({
+      owner: {
+        id: owner._id,
+        name: owner.name,
+        email: owner.email,
+        role: owner.role,
+        mustResetPassword: owner.mustResetPassword,
+      },
+      tempPassword,
+    });
+  } catch (error) {
+    console.error('resetOwnerPassword error:', error);
+    return res.status(500).json({
+      error: { code: 'SERVER_ERROR', message: 'Error resetting owner password.' },
     });
   }
 };

@@ -1,12 +1,9 @@
 services:
-  mongo:
-    image: mongo:7
-    container_name: pg_management_mongo
+  app:
+    build: .
+    container_name: pg_management_server
     ports:
-      - "27017:27017"
-    volumes:
-      - pg_mongo_data:/data/db
+      - "5001:5001"
+    env_file:
+      - .env
     restart: unless-stopped
-
-volumes:
-  pg_mongo_data:

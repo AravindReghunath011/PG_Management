@@ -5,6 +5,9 @@ import { Stay } from '../stays/stay.model';
 import { Bed } from '../beds/bed.model';
 import { Payment } from '../payments/payment.model';
 import { Room } from '../rooms/room.model';
+
+/** Treat the search text literally ("+91", "(", "." aren't regex syntax). */
+const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 import { Branch } from '../branches/branch.model';
 
 // Unified search for residents
@@ -27,8 +30,8 @@ export const searchResidents = async (req: AuthenticatedRequest, res: Response) 
       ownerId,
       deletedAt: null,
       $or: [
-        { name: { $regex: q, $options: 'i' } },
-        { phone: { $regex: q, $options: 'i' } }
+        { name: { $regex: escapeRegex(String(q)), $options: 'i' } },
+        { phone: { $regex: escapeRegex(String(q).replace(/[\s-]/g, '')), $options: 'i' } }
       ]
     });
 

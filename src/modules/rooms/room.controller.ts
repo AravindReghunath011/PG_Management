@@ -3,6 +3,7 @@ import { AuthenticatedRequest, scopeOwnerId } from '../../middleware/auth';
 import { Room, IRoom } from './room.model';
 import { Bed } from '../beds/bed.model';
 import { Branch } from '../branches/branch.model';
+import { parseRentPaise } from '../../utils/rent';
 import { v4 as uuidv4 } from 'uuid';
 
 type RoomStats = { totalBeds: number; occupiedBeds: number };
@@ -16,6 +17,7 @@ type RoomResponse = {
   floor: number;
   type: string;
   amenities: string[];
+  rentPaise: number | null;
   totalBeds: number;
   occupiedBeds: number;
   createdAt?: Date;
@@ -49,6 +51,7 @@ function toRoomResponse(room: IRoom, stats: RoomStats = { totalBeds: 0, occupied
     floor: room.floor,
     type: roomTypeFromBedCount(stats.totalBeds),
     amenities: room.amenities ?? [],
+    rentPaise: room.rentPaise ?? null,
     totalBeds: stats.totalBeds,
     occupiedBeds: stats.occupiedBeds,
     createdAt: room.createdAt,
@@ -138,10 +141,30 @@ export const getRoomById = async (req: AuthenticatedRequest, res: Response) => {
   }
 };
 
+/** A live room with the same number in the branch (case-insensitive), if any. */
+async function findDuplicateRoom(ownerId: string, branchId: string, roomNumber: string, exceptId?: string) {
+  const escaped = roomNumber.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return Room.findOne({
+    ownerId,
+    branchId,
+    deletedAt: null,
+    roomNumber: { $regex: `^${escaped}$`, $options: 'i' },
+    ...(exceptId ? { _id: { $ne: exceptId } } : {}),
+  });
+}
+
 export const createRoom = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const ownerId = req.ownerId!;
-    const { branchId, roomNumber, floor, id, bedCount, amenities } = req.body;
+    const { branchId, roomNumber, floor, id, bedCount, amenities, rentPaise, bedRentPaise } =
+      req.body;
+
+    const rent = parseRentPaise(rentPaise);
+    if (rent.kind === 'invalid') {
+      return res.status(400).json({
+        error: { code: 'BAD_REQUEST', message: rent.message },
+      });
+    }
 
     const trimmedNumber =
       typeof roomNumber === 'string' ? roomNumber.trim() : '';
@@ -169,6 +192,23 @@ export const createRoom = async (req: AuthenticatedRequest, res: Response) => {
       });
     }
 
+    // Optional per-bed prices, one per bed in order (null = use room rent).
+    const bedRents: (number | null)[] = [];
+    if (bedRentPaise !== undefined && bedRentPaise !== null) {
+      if (!Array.isArray(bedRentPaise) || bedRentPaise.length > bedsToCreate) {
+        return res.status(400).json({
+          error: { code: 'BAD_REQUEST', message: 'bedRentPaise must be a list with at most one price per bed.' },
+        });
+      }
+      for (const value of bedRentPaise) {
+        const parsed = parseRentPaise(value);
+        if (parsed.kind === 'invalid') {
+          return res.status(400).json({ error: { code: 'BAD_REQUEST', message: parsed.message } });
+        }
+        bedRents.push(parsed.kind === 'ok' ? parsed.value : null);
+      }
+    }
+
     const branch = await Branch.findOne({
       _id: branchId,
       ownerId,
@@ -180,6 +220,12 @@ export const createRoom = async (req: AuthenticatedRequest, res: Response) => {
       });
     }
 
+    if (await findDuplicateRoom(ownerId, branchId, trimmedNumber)) {
+      return res.status(409).json({
+        error: { code: 'DUPLICATE_ROOM', message: `Room ${trimmedNumber} already exists in ${branch.name}.` },
+      });
+    }
+
     const roomId = id || uuidv4();
     const room = new Room({
       _id: roomId,
@@ -188,6 +234,7 @@ export const createRoom = async (req: AuthenticatedRequest, res: Response) => {
       roomNumber: trimmedNumber,
       floor: floorNum,
       amenities: Array.isArray(amenities) ? amenities : [],
+      rentPaise: rent.kind === 'ok' ? rent.value : null,
     });
     await room.save();
 
@@ -198,6 +245,7 @@ export const createRoom = async (req: AuthenticatedRequest, res: Response) => {
         roomId,
         bedNumber: BED_LETTERS[i],
         status: 'vacant' as const,
+        rentPaise: bedRents[i] ?? null,
       }));
       await Bed.insertMany(beds);
     }
@@ -216,7 +264,14 @@ export const updateRoom = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const ownerId = req.ownerId!;
     const { id } = req.params;
-    const { roomNumber, floor, amenities } = req.body;
+    const { roomNumber, floor, amenities, rentPaise } = req.body;
+
+    const rent = parseRentPaise(rentPaise);
+    if (rent.kind === 'invalid') {
+      return res.status(400).json({
+        error: { code: 'BAD_REQUEST', message: rent.message },
+      });
+    }
 
     const room = await Room.findOne({ _id: id, ownerId, deletedAt: null });
     if (!room) {
@@ -226,6 +281,11 @@ export const updateRoom = async (req: AuthenticatedRequest, res: Response) => {
     }
 
     if (typeof roomNumber === 'string' && roomNumber.trim()) {
+      if (await findDuplicateRoom(room.ownerId, room.branchId, roomNumber.trim(), room._id)) {
+        return res.status(409).json({
+          error: { code: 'DUPLICATE_ROOM', message: `Room ${roomNumber.trim()} already exists in this property.` },
+        });
+      }
       room.roomNumber = roomNumber.trim();
     }
     if (floor !== undefined && floor !== null && floor !== '') {
@@ -239,6 +299,10 @@ export const updateRoom = async (req: AuthenticatedRequest, res: Response) => {
     }
     if (Array.isArray(amenities)) {
       room.amenities = amenities;
+    }
+    // 'absent' leaves the stored override untouched; an explicit null clears it.
+    if (rent.kind === 'ok') {
+      room.rentPaise = rent.value;
     }
 
     await room.save();
@@ -266,8 +330,21 @@ export const deleteRoom = async (req: AuthenticatedRequest, res: Response) => {
       });
     }
 
-    room.deletedAt = new Date();
+    const occupied = await Bed.countDocuments({ ownerId: req.ownerId, roomId: room._id, deletedAt: null, status: 'occupied' });
+    if (occupied > 0) {
+      return res.status(400).json({
+        error: {
+          code: 'ROOM_OCCUPIED',
+          message: `Room ${room.roomNumber} has ${occupied} occupied bed${occupied === 1 ? '' : 's'}. Vacate the residents first.`,
+        },
+      });
+    }
+
+    const now = new Date();
+    room.deletedAt = now;
     await room.save();
+    // Its (vacant) beds go with it; stay history keeps pointing at them.
+    await Bed.updateMany({ ownerId: req.ownerId, roomId: room._id, deletedAt: null }, { $set: { deletedAt: now } });
     return res.status(200).json({
       success: true,
       message: 'Room soft-deleted successfully.',

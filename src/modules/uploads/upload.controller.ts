@@ -4,6 +4,18 @@ import { AuthenticatedRequest } from '../../middleware/auth';
 import { Resident } from '../residents/resident.model';
 import { r2Client, uploadBufferToR2, buildKycObjectKey, buildPublicUrl } from '../../lib/r2Client';
 
+/**
+ * What the file is. `kyc_front` is the default so existing clients that send
+ * only `file` + `residentId` keep writing kycImageUrl as before.
+ */
+const UPLOAD_KINDS = {
+  kyc_front: { field: 'kycImageUrl', key: (id: string, ext: string) => buildKycObjectKey(id, ext) },
+  kyc_back: { field: 'kycBackImageUrl', key: (id: string, ext: string) => buildKycObjectKey(`${id}-back`, ext) },
+  photo: { field: 'photoUrl', key: (id: string, ext: string) => `photos/${id}${ext}` },
+} as const;
+type UploadKind = keyof typeof UPLOAD_KINDS;
+const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png']);
+
 export const uploadKyc = async (req: AuthenticatedRequest, res: Response) => {
   try {
     if (!req.file) {
@@ -13,6 +25,12 @@ export const uploadKyc = async (req: AuthenticatedRequest, res: Response) => {
     }
 
     const { residentId } = req.body;
+    const kind = (req.body.kind ?? 'kyc_front') as UploadKind;
+    if (!(kind in UPLOAD_KINDS)) {
+      return res.status(400).json({
+        error: { code: 'BAD_REQUEST', message: 'kind must be kyc_front, kyc_back, or photo.' },
+      });
+    }
     if (!residentId) {
       return res.status(400).json({
         error: { code: 'BAD_REQUEST', message: 'residentId is required.' },
@@ -33,7 +51,13 @@ export const uploadKyc = async (req: AuthenticatedRequest, res: Response) => {
     }
 
     const ext = path.extname(req.file.originalname).toLowerCase();
-    const key = buildKycObjectKey(residentId, ext);
+    if (kind === 'photo' && !IMAGE_EXTS.has(ext)) {
+      return res.status(400).json({
+        error: { code: 'BAD_REQUEST', message: 'Resident photo must be a JPG or PNG.' },
+      });
+    }
+    const { field, key: keyFor } = UPLOAD_KINDS[kind];
+    const key = keyFor(residentId, ext);
 
     try {
       await uploadBufferToR2(r2Client, {
@@ -49,13 +73,16 @@ export const uploadKyc = async (req: AuthenticatedRequest, res: Response) => {
       });
     }
 
-    const kycImageUrl = buildPublicUrl(key);
+    const url = buildPublicUrl(key);
 
-    resident.kycImageUrl = kycImageUrl;
+    resident[field] = url;
     await resident.save();
 
     return res.status(200).json({
-      kycImageUrl,
+      kind,
+      url,
+      // Kept for existing clients, which read kycImageUrl after a front upload.
+      kycImageUrl: resident.kycImageUrl,
       residentId: resident._id,
     });
   } catch (error) {

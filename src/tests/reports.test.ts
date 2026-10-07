@@ -315,3 +315,172 @@ describe('Food preference report', () => {
     expect(res.body).toEqual({ withFood: 1, withoutFood: 1 });
   });
 });
+
+describe('Collection summary report', () => {
+  const RANGE = '?from=2026-09-01T00:00:00.000Z&to=2026-09-30T23:59:59.999Z';
+
+  it('reports rent due vs paid per resident, with bed/room/branch labels', async () => {
+    const { token, bedIds } = await setupOwnerWithBed('cs-owner@example.com');
+    const a = await checkInResident(token, bedIds[0], 'Asha', '9100000001', '2026-08-01T00:00:00.000Z');
+    const b = await checkInResident(token, bedIds[1], 'Bala', '9100000002', '2026-08-01T00:00:00.000Z');
+
+    // Asha: fully paid. Bala: partly paid.
+    const dueA = await request(app)
+      .post('/api/payments')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ stayId: a.stayId, residentId: a.residentId, dueDate: '2026-09-05T00:00:00.000Z', rentDue: 800000 });
+    const dueB = await request(app)
+      .post('/api/payments')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ stayId: b.stayId, residentId: b.residentId, dueDate: '2026-09-05T00:00:00.000Z', rentDue: 800000 });
+
+    await request(app)
+      .put(`/api/payments/${dueA.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ rentCollected: 800000 });
+    await request(app)
+      .put(`/api/payments/${dueB.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ rentCollected: 300000 });
+
+    const res = await request(app)
+      .get(`/api/reports/collection-summary${RANGE}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.tenants).toHaveLength(2);
+
+    const asha = res.body.tenants.find((t: any) => t.name === 'Asha');
+    const bala = res.body.tenants.find((t: any) => t.name === 'Bala');
+
+    expect(asha).toMatchObject({ due_amount: 800000, paid_amount: 800000, room_number: '101' });
+    expect(asha.bed_number).toBeTruthy();
+    expect(asha.branch_name).toBe('Main');
+    expect(bala).toMatchObject({ due_amount: 800000, paid_amount: 300000 });
+  });
+
+  it('sums multiple dues for the same resident into one row', async () => {
+    const { token, bedIds } = await setupOwnerWithBed('cs-multi@example.com');
+    const a = await checkInResident(token, bedIds[0], 'Multi', '9100000010', '2026-08-01T00:00:00.000Z');
+
+    for (const day of ['2026-09-05', '2026-09-20']) {
+      await request(app)
+        .post('/api/payments')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ stayId: a.stayId, residentId: a.residentId, dueDate: `${day}T00:00:00.000Z`, rentDue: 500000 });
+    }
+
+    const res = await request(app)
+      .get(`/api/reports/collection-summary${RANGE}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.body.tenants).toHaveLength(1);
+    expect(res.body.tenants[0].due_amount).toBe(1000000);
+  });
+
+  it('excludes dues outside the period and counts expenses inside it', async () => {
+    const { token, bedIds } = await setupOwnerWithBed('cs-range@example.com');
+    const a = await checkInResident(token, bedIds[0], 'Ranged', '9100000020', '2026-07-01T00:00:00.000Z');
+    // Left in August, so no September rent is owed (dues are automatic now).
+    await request(app)
+      .put(`/api/stays/${a.stayId}/checkout`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ checkOutDate: '2026-08-20T00:00:00.000Z' });
+
+    // August due — outside the September window.
+    await request(app)
+      .post('/api/payments')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ stayId: a.stayId, residentId: a.residentId, dueDate: '2026-08-05T00:00:00.000Z', rentDue: 700000 });
+
+    await request(app)
+      .post('/api/expenses')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ category: 'electricity', amount: 125000, date: '2026-09-10T00:00:00.000Z' });
+    await request(app)
+      .post('/api/expenses')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ category: 'cleaning', amount: 999999, date: '2026-08-10T00:00:00.000Z' });
+
+    const res = await request(app)
+      .get(`/api/reports/collection-summary${RANGE}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.body.tenants).toHaveLength(0);
+    expect(res.body.expenses).toBe(125000);
+  });
+
+  it('includes a due dated on the final day of the period', async () => {
+    const { token, bedIds } = await setupOwnerWithBed('cs-edge@example.com');
+    // Moves in at the boundary itself, so the only due near the window is
+    // this one (no automatic September rent).
+    const a = await checkInResident(token, bedIds[0], 'Edge', '9100000030', '2026-09-30T18:30:00.000Z');
+
+    await request(app)
+      .post('/api/payments')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ stayId: a.stayId, residentId: a.residentId, dueDate: '2026-09-30T18:30:00.000Z', rentDue: 400000 });
+
+    const res = await request(app)
+      .get(`/api/reports/collection-summary${RANGE}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.body.tenants).toHaveLength(1);
+    expect(res.body.tenants[0].due_amount).toBe(400000);
+  });
+
+  it('lists residents who checked out during the period', async () => {
+    const { token, bedIds } = await setupOwnerWithBed('cs-leaving@example.com');
+    const a = await checkInResident(token, bedIds[0], 'Leaver', '9100000040', '2026-08-01T00:00:00.000Z');
+    await checkInResident(token, bedIds[1], 'Stayer', '9100000041', '2026-08-01T00:00:00.000Z');
+
+    await request(app)
+      .put(`/api/stays/${a.stayId}/checkout`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ checkOutDate: '2026-09-15T00:00:00.000Z' });
+
+    const res = await request(app)
+      .get(`/api/reports/collection-summary${RANGE}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.body.leaving).toHaveLength(1);
+    expect(res.body.leaving[0].name).toBe('Leaver');
+    expect(res.body.leaving[0].leaving_on.slice(0, 10)).toBe('2026-09-15');
+    expect(res.body.leaving[0].room_number).toBe('101');
+  });
+
+  it('never leaks another owner\'s dues or expenses', async () => {
+    const mine = await setupOwnerWithBed('cs-mine@example.com');
+    const theirs = await setupOwnerWithBed('cs-theirs@example.com');
+
+    const t = await checkInResident(theirs.token, theirs.bedIds[0], 'Theirs', '9100000050', '2026-08-01T00:00:00.000Z');
+    await request(app)
+      .post('/api/payments')
+      .set('Authorization', `Bearer ${theirs.token}`)
+      .send({ stayId: t.stayId, residentId: t.residentId, dueDate: '2026-09-05T00:00:00.000Z', rentDue: 900000 });
+    await request(app)
+      .post('/api/expenses')
+      .set('Authorization', `Bearer ${theirs.token}`)
+      .send({ category: 'other', amount: 555000, date: '2026-09-10T00:00:00.000Z' });
+
+    const res = await request(app)
+      .get(`/api/reports/collection-summary${RANGE}`)
+      .set('Authorization', `Bearer ${mine.token}`);
+
+    expect(res.body.tenants).toHaveLength(0);
+    expect(res.body.expenses).toBe(0);
+  });
+
+  it('rejects a missing or invalid range', async () => {
+    const { token } = await setupOwnerWithBed('cs-validate@example.com');
+    const missing = await request(app)
+      .get('/api/reports/collection-summary')
+      .set('Authorization', `Bearer ${token}`);
+    expect(missing.status).toBe(400);
+
+    const backwards = await request(app)
+      .get('/api/reports/collection-summary?from=2026-09-30T00:00:00.000Z&to=2026-09-01T00:00:00.000Z')
+      .set('Authorization', `Bearer ${token}`);
+    expect(backwards.status).toBe(400);
+  });
+});

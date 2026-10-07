@@ -1,6 +1,8 @@
 import { Schema, model } from 'mongoose';
 
 export type ExpenseCategory =
+  | 'food'
+  | 'rent'
   | 'electricity'
   | 'cleaning'
   | 'maintenance'
@@ -27,7 +29,7 @@ const ExpenseSchema = new Schema<IExpense>(
     branchId: { type: String, default: null },
     category: {
       type: String,
-      enum: ['electricity', 'cleaning', 'maintenance', 'salaries', 'other'],
+      enum: ['food', 'rent', 'electricity', 'cleaning', 'maintenance', 'salaries', 'other'],
       required: true,
     },
     amount: { type: Number, required: true, min: 0 },

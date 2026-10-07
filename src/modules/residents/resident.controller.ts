@@ -30,6 +30,34 @@ function normalizeFoodPreference(raw: unknown): 'with_food' | 'without_food' {
 const PHONE_REGEX = /^[0-9]{10}$/;
 const MAX_NAME_LENGTH = 50;
 
+const optionalText = (value: unknown) =>
+  typeof value === 'string' && value.trim() ? value.trim() : null;
+
+/**
+ * Validates the optional guardian fields. Returns an error message, or the
+ * normalised values (null = cleared). Only keys present in `body` are returned,
+ * so an update can leave the others untouched.
+ */
+function parseGuardian(body: Record<string, unknown>):
+  | { error: string }
+  | { values: Partial<Record<'guardianName' | 'guardianPhone' | 'guardianRelation', string | null>> } {
+  const values: Partial<Record<'guardianName' | 'guardianPhone' | 'guardianRelation', string | null>> = {};
+  if (body.guardianName !== undefined) {
+    const name = optionalText(body.guardianName);
+    if (name && name.length > MAX_NAME_LENGTH) {
+      return { error: `guardianName must be ${MAX_NAME_LENGTH} characters or fewer.` };
+    }
+    values.guardianName = name;
+  }
+  if (body.guardianPhone !== undefined) {
+    const phone = optionalText(body.guardianPhone);
+    if (phone && !PHONE_REGEX.test(phone)) return { error: 'guardianPhone must be exactly 10 digits.' };
+    values.guardianPhone = phone;
+  }
+  if (body.guardianRelation !== undefined) values.guardianRelation = optionalText(body.guardianRelation);
+  return { values };
+}
+
 type ResidentResponse = {
   id: string;
   _id: string;
@@ -40,6 +68,11 @@ type ResidentResponse = {
   kycType: string;
   kycRef: string;
   kycImageUrl: string | null;
+  kycBackImageUrl: string | null;
+  photoUrl: string | null;
+  guardianName: string | null;
+  guardianPhone: string | null;
+  guardianRelation: string | null;
   foodPreference: string;
   currentStayId: string | null;
   currentBedId: string | null;
@@ -80,6 +113,11 @@ function toResidentResponse(
     kycType: resident.kycType,
     kycRef: resident.kycRef,
     kycImageUrl: resident.kycImageUrl ?? null,
+    kycBackImageUrl: resident.kycBackImageUrl ?? null,
+    photoUrl: resident.photoUrl ?? null,
+    guardianName: resident.guardianName ?? null,
+    guardianPhone: resident.guardianPhone ?? null,
+    guardianRelation: resident.guardianRelation ?? null,
     foodPreference: resident.foodPreference ?? 'with_food',
     currentStayId: occupancy?.stayId ?? null,
     currentBedId: occupancy?.bedId ?? null,
@@ -257,6 +295,11 @@ export const createResident = async (req: AuthenticatedRequest, res: Response) =
       });
     }
 
+    const guardian = parseGuardian(req.body);
+    if ('error' in guardian) {
+      return res.status(400).json({ error: { code: 'BAD_REQUEST', message: guardian.error } });
+    }
+
     const existing = await Resident.findOne({
       ownerId: req.ownerId,
       phone: trimmedPhone,
@@ -282,6 +325,7 @@ export const createResident = async (req: AuthenticatedRequest, res: Response) =
       kycRef: trimmedKycRef,
       kycImageUrl: kycImageUrl ?? null,
       foodPreference: normalizeFoodPreference(foodPreference),
+      ...guardian.values,
     });
 
     await resident.save();
@@ -353,6 +397,11 @@ export const updateResident = async (req: AuthenticatedRequest, res: Response) =
     if (foodPreference !== undefined) {
       resident.foodPreference = normalizeFoodPreference(foodPreference);
     }
+    const guardian = parseGuardian(req.body);
+    if ('error' in guardian) {
+      return res.status(400).json({ error: { code: 'BAD_REQUEST', message: guardian.error } });
+    }
+    Object.assign(resident, guardian.values);
 
     await resident.save();
     const occupancy = await getOccupancyByResidentIds(ownerId, [resident._id]);

@@ -7,6 +7,9 @@ export interface IRoom {
   roomNumber: string;
   floor: number;
   amenities: string[]; // e.g. ['ac'] — fixed list, extend in code as needed
+  // Default monthly rent for beds in this room, in paise. null = inherit the
+  // owner's defaultRentPaise. A Bed may override it again.
+  rentPaise: number | null;
   createdAt?: Date;
   updatedAt?: Date;
   deletedAt: Date | null;
@@ -20,6 +23,7 @@ const RoomSchema = new Schema<IRoom>(
     roomNumber: { type: String, required: true },
     floor: { type: Number, required: true },
     amenities: { type: [String], default: [] },
+    rentPaise: { type: Number, default: null },
     deletedAt: { type: Date, default: null },
   },
   {
