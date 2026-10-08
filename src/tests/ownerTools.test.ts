@@ -381,3 +381,51 @@ describe('Expenses without a property', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('Move resident to another bed', () => {
+  it('closes the old stay, opens a new one, swaps beds, and never double-charges a month', async () => {
+    const { auth, beds } = await setup('move@example.com');
+    const { residentId, stayId } = await checkIn(auth, beds[0], '9000000030', 500000, 40, 1500000);
+    // Create every due so far, then move today to bed B at a new rent.
+    await request(app)
+      .get('/api/payments')
+      .query({ from: new Date(Date.now() - 45 * DAY).toISOString(), to: new Date().toISOString() })
+      .set(auth);
+    const original = await Stay.findById(stayId);
+
+    const res = await request(app)
+      .put(`/api/stays/${stayId}/move`)
+      .set(auth)
+      .send({ bedId: beds[1], moveDate: new Date().toISOString(), monthlyRent: 600000 });
+    expect(res.status).toBe(200);
+    const newStayId = res.body.id;
+    expect(newStayId).not.toBe(stayId);
+
+    const [oldStay, newStay] = await Promise.all([Stay.findById(stayId), Stay.findById(newStayId)]);
+    expect(oldStay?.checkOutDate).not.toBeNull();
+    expect(newStay).toMatchObject({ residentId, bedId: beds[1], monthlyRent: 600000, securityDeposit: 1500000, movedFromStayId: stayId });
+    expect(newStay?.rentAnchorDate?.toISOString()).toBe(original?.checkInDate.toISOString());
+    expect((await Bed.findById(beds[0]))?.status).toBe('vacant');
+    expect((await Bed.findById(beds[1]))?.status).toBe('occupied');
+
+    // One due per month for the resident across both stays.
+    const dues = await Payment.find({ residentId, deletedAt: null });
+    const months = dues.map((d) => monthKeyOf(d.dueDate));
+    expect(new Set(months).size).toBe(months.length);
+    // History keeps both stays; the resident's current bed is the new one.
+    const history = await request(app).get('/api/stays').query({ residentId }).set(auth);
+    expect(history.body).toHaveLength(2);
+    const resident = await request(app).get(`/api/residents/${residentId}`).set(auth);
+    expect(resident.body.currentBedId).toBe(beds[1]);
+  });
+
+  it('rejects an occupied bed, the same bed, and another owner’s stay', async () => {
+    const { auth, beds } = await setup('move-bad@example.com');
+    const a = await checkIn(auth, beds[0], '9000000031', 500000, 10);
+    await checkIn(auth, beds[1], '9000000032', 500000, 10);
+    expect((await request(app).put(`/api/stays/${a.stayId}/move`).set(auth).send({ bedId: beds[1] })).status).toBe(400);
+    expect((await request(app).put(`/api/stays/${a.stayId}/move`).set(auth).send({ bedId: beds[0] })).status).toBe(400);
+    const stranger = await setup('move-stranger@example.com');
+    expect((await request(app).put(`/api/stays/${a.stayId}/move`).set(stranger.auth).send({ bedId: stranger.beds[0] })).status).toBe(404);
+  });
+});

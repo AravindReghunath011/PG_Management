@@ -139,7 +139,8 @@ export async function ensureMonthlyDues(
       for (const ym of months) {
         const key = monthKey(ym);
         if (covered.has(`${stay._id}|${key}`)) continue;
-        const dueDate = dueDateIn(ym, stay.checkInDate, ownerDueDay);
+        // A moved stay keeps the due day of the stay it continues.
+        const dueDate = dueDateIn(ym, stay.rentAnchorDate ?? stay.checkInDate, ownerDueDay);
         if (dueDate < checkInDay) continue;
         if (stay.checkOutDate && dueDate >= stay.checkOutDate) continue;
         if (stay.noticeMoveOutDate && dueDate >= stay.noticeMoveOutDate) continue;

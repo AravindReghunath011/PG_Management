@@ -15,6 +15,12 @@ const UPLOAD_KINDS = {
 } as const;
 type UploadKind = keyof typeof UPLOAD_KINDS;
 const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png']);
+const TYPE_BY_EXT: Record<string, string> = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.pdf': 'application/pdf' };
+
+/** Some clients (Expo's fetch) send files as application/octet-stream; store
+ * them with the real type so images display instead of downloading. */
+const contentTypeFor = (mimetype: string, ext: string) =>
+  mimetype && mimetype !== 'application/octet-stream' ? mimetype : TYPE_BY_EXT[ext] ?? 'application/octet-stream';
 
 export const uploadKyc = async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -64,7 +70,7 @@ export const uploadKyc = async (req: AuthenticatedRequest, res: Response) => {
         bucket: process.env.R2_BUCKET_NAME!,
         key,
         body: req.file.buffer,
-        contentType: req.file.mimetype,
+        contentType: contentTypeFor(req.file.mimetype, ext),
       });
     } catch (uploadError) {
       console.error('R2 upload error:', uploadError);

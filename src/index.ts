@@ -167,6 +167,7 @@ app.post('/api/stays', authenticateOwner, enforceOwnerBodyScope, stayController.
 app.put('/api/stays/:id', authenticateOwner, stayController.updateStay);
 app.get('/api/stays/:id/settlement-preview', authenticateOwner, stayController.getSettlementPreview);
 app.put('/api/stays/:id/checkout', authenticateOwner, stayController.checkOutResident);
+app.put('/api/stays/:id/move', authenticateOwner, stayController.moveStay);
 app.put('/api/stays/:id/notice', authenticateOwner, stayController.giveNotice);
 app.delete('/api/stays/:id/notice', authenticateOwner, stayController.cancelNotice);
 

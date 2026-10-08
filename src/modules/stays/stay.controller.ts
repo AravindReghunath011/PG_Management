@@ -6,6 +6,8 @@ import { Resident } from '../residents/resident.model';
 import { Room } from '../rooms/room.model';
 import { v4 as uuidv4 } from 'uuid';
 import { ensureMonthlyDues, voidAutoDuesFrom } from '../payments/monthlyDues';
+import { Payment } from '../payments/payment.model';
+import { PaymentTransaction } from '../payments/paymentTransaction.model';
 import { openDues, parseSettlement, settleDeposit } from './depositSettlement';
 
 function toStayResponse(
@@ -482,5 +484,101 @@ export const getSettlementPreview = async (req: AuthenticatedRequest, res: Respo
   } catch (error) {
     console.error('Settlement preview error:', error);
     return res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Error preparing settlement.' } });
+  }
+};
+
+/**
+ * Moves a resident to another bed. History is never rewritten: the current
+ * stay is closed on `moveDate` and a new stay on the new bed continues it
+ * (same resident, deposit and notice; rent due day unchanged). Dues dated on
+ * or after the move follow the resident to the new stay so no month is
+ * charged twice; unpaid automatic ones take the new rent.
+ */
+export const moveStay = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const ownerId = req.ownerId!;
+    const { bedId, moveDate, monthlyRent, id } = req.body ?? {};
+
+    const stay = await Stay.findOne({ _id: req.params.id, ownerId, deletedAt: null });
+    if (!stay) {
+      return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Stay not found.' } });
+    }
+    if (stay.checkOutDate !== null) {
+      return res.status(400).json({ error: { code: 'ALREADY_CHECKED_OUT', message: 'This stay is already checked out.' } });
+    }
+
+    const when = moveDate ? new Date(moveDate) : new Date();
+    if (Number.isNaN(when.getTime()) || when < stay.checkInDate || when.getTime() > Date.now() + 60_000) {
+      return res.status(400).json({
+        error: { code: 'INVALID_MOVE_DATE', message: 'Move date must be between check-in and today.' },
+      });
+    }
+
+    let rent = stay.monthlyRent;
+    if (monthlyRent !== undefined && monthlyRent !== null && monthlyRent !== '') {
+      const parsed = parseAmountPaise(monthlyRent);
+      if (parsed === null || parsed < 0) {
+        return res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'monthlyRent must be a non-negative amount.' } });
+      }
+      rent = parsed;
+    }
+
+    if (!bedId || bedId === stay.bedId) {
+      return res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'Choose a different bed to move to.' } });
+    }
+    const newBed = await Bed.findOne({ _id: bedId, ownerId, deletedAt: null });
+    if (!newBed) {
+      return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Bed not found.' } });
+    }
+    if (newBed.status !== 'vacant') {
+      return res.status(400).json({ error: { code: 'BED_OCCUPIED', message: 'That bed is already occupied.' } });
+    }
+
+    // New stay on the new bed, continuing the old one.
+    const next = new Stay({
+      _id: id || uuidv4(),
+      ownerId,
+      residentId: stay.residentId,
+      bedId: newBed._id,
+      checkInDate: when,
+      monthlyRent: rent,
+      securityDeposit: stay.securityDeposit,
+      noticeMoveOutDate: stay.noticeMoveOutDate ?? null,
+      movedFromStayId: stay._id,
+      rentAnchorDate: stay.rentAnchorDate ?? stay.checkInDate,
+    });
+    await next.save();
+
+    stay.checkOutDate = when;
+    await stay.save();
+
+    await Bed.updateOne({ _id: stay.bedId, ownerId }, { $set: { status: 'vacant' } });
+    newBed.status = 'occupied';
+    await newBed.save();
+
+    // Dues from the move on belong to the new stay (and its transactions).
+    const carried = await Payment.find({ ownerId, stayId: stay._id, dueDate: { $gte: when } });
+    for (const due of carried) {
+      due.stayId = next._id;
+      const untouched = due.rentPaid + due.electricityPaid + due.otherPaid === 0;
+      if (due.dueMonth && untouched && due.deletedAt === null) due.rentDue = rent;
+      await due.save();
+    }
+    if (carried.length) {
+      await PaymentTransaction.updateMany(
+        { ownerId, paymentId: { $in: carried.map((d) => d._id) } },
+        { $set: { stayId: next._id } },
+      );
+    }
+    await ensureMonthlyDues(ownerId, new Date(), new Date(), new Date(), { stayId: next._id });
+
+    const [enriched] = await enrichStays(ownerId, [next]);
+    return res.status(200).json(enriched);
+  } catch (error: any) {
+    console.error('Move stay error:', error);
+    if (error?.message?.includes('DOUBLE_OCCUPANCY')) {
+      return res.status(400).json({ error: { code: 'BED_OCCUPIED', message: 'That bed is already occupied.' } });
+    }
+    return res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Error moving resident.' } });
   }
 };

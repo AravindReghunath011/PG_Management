@@ -10,6 +10,10 @@ export interface IStay {
   // Planned move-out while the resident still occupies the bed (notice
   // period). The bed stays occupied until checkout sets checkOutDate.
   noticeMoveOutDate: Date | null;
+  // Set when a resident moves beds: the new stay continues `movedFromStayId`
+  // and keeps rent falling due on the original stay's day (rentAnchorDate).
+  movedFromStayId: string | null;
+  rentAnchorDate: Date | null;
   // Recorded at checkout: deductions from the deposit and the refund (paise).
   depositSettlement: {
     deductions: { kind: 'rent' | 'damage' | 'cleaning' | 'other'; label: string; amount: number }[];
@@ -35,6 +39,8 @@ const StaySchema = new Schema<IStay>(
     checkInDate: { type: Date, required: true },
     checkOutDate: { type: Date, default: null },
     noticeMoveOutDate: { type: Date, default: null },
+    movedFromStayId: { type: String, default: null },
+    rentAnchorDate: { type: Date, default: null },
     depositSettlement: {
       type: new Schema(
         {
