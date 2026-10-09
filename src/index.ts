@@ -28,9 +28,14 @@ import * as reportsController from './modules/reports/reports.controller';
 import * as expenseController from './modules/expenses/expense.controller';
 import * as adminController from './modules/admin/admin.controller';
 import * as notificationsController from './modules/notifications/notifications.controller';
+import * as inviteController from './modules/invites/invite.controller';
+import { serveJoinPage } from './modules/invites/joinPage';
 
 const app = express();
 const PORT = process.env.PORT || 5001;
+// Behind Render's proxy: use the real client IP for rate limits and https for
+// the self check-in links we hand out.
+app.set('trust proxy', 1);
 
 // ── Security & logging middleware ──────────────────────────────────
 app.use(helmet());
@@ -65,6 +70,17 @@ const apiLimiter = rateLimit({
   message: { error: { code: 'RATE_LIMITED', message: 'Too many requests. Try again later.' } },
 });
 
+// Self check-in links are public (the token is the credential), so they get
+// their own tight per-IP budget.
+const publicInviteLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipInTest,
+  message: { error: { code: 'RATE_LIMITED', message: 'Too many attempts. Try again in a few minutes.' } },
+});
+
 // ── Body parsing ──────────────────────────────────────────────────
 app.use(express.json({ limit: '1mb' }));
 
@@ -86,6 +102,20 @@ app.get('/health', (_req, res) => {
 app.post('/api/auth/signup', authLimiter, authController.register);
 app.post('/api/auth/login', authLimiter, authController.login);
 
+// Self check-in (Public): the page a new Resident opens, and its API
+app.get('/join/:token', publicInviteLimiter, serveJoinPage);
+app.get('/api/public/invites/:token', publicInviteLimiter, inviteController.getPublicInvite);
+app.post(
+  '/api/public/invites/:token',
+  publicInviteLimiter,
+  kycUpload.fields([
+    { name: 'photo', maxCount: 1 },
+    { name: 'kycFront', maxCount: 1 },
+    { name: 'kycBack', maxCount: 1 },
+  ]),
+  inviteController.submitPublicInvite
+);
+
 // Apply general rate limiter to all authenticated routes
 app.use('/api', apiLimiter);
 
@@ -98,6 +128,11 @@ app.put('/api/auth/profile', authenticateOwner, authController.updateProfile);
 // Dashboard (Protected)
 app.get('/api/dashboard/stats', authenticateOwner, dashboardController.getStats);
 app.get('/api/dashboard/overview', authenticateOwner, dashboardController.getOverview);
+
+// Self check-in links (Protected): the owner creates, lists and cancels them
+app.get('/api/invites', authenticateOwner, inviteController.getInvites);
+app.post('/api/invites', authenticateOwner, enforceOwnerBodyScope, inviteController.createInvite);
+app.delete('/api/invites/:id', authenticateOwner, inviteController.revokeInvite);
 
 // Notifications (Protected): derived from the owner's data on every read
 app.get('/api/notifications', authenticateOwner, notificationsController.getNotifications);

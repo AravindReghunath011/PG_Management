@@ -13,7 +13,7 @@ const UPLOAD_KINDS = {
   kyc_back: { field: 'kycBackImageUrl', key: (id: string, ext: string) => buildKycObjectKey(`${id}-back`, ext) },
   photo: { field: 'photoUrl', key: (id: string, ext: string) => `photos/${id}${ext}` },
 } as const;
-type UploadKind = keyof typeof UPLOAD_KINDS;
+export type UploadKind = keyof typeof UPLOAD_KINDS;
 const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png']);
 const TYPE_BY_EXT: Record<string, string> = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.pdf': 'application/pdf' };
 
@@ -21,6 +21,26 @@ const TYPE_BY_EXT: Record<string, string> = { '.jpg': 'image/jpeg', '.jpeg': 'im
  * them with the real type so images display instead of downloading. */
 const contentTypeFor = (mimetype: string, ext: string) =>
   mimetype && mimetype !== 'application/octet-stream' ? mimetype : TYPE_BY_EXT[ext] ?? 'application/octet-stream';
+
+/** Stores one Resident file in R2 and returns its public URL and the Resident field it belongs in. */
+export async function storeResidentFile(
+  residentId: string,
+  kind: UploadKind,
+  file: { buffer: Buffer; originalname: string; mimetype: string },
+) {
+  const ext = path.extname(file.originalname).toLowerCase();
+  const { field, key: keyFor } = UPLOAD_KINDS[kind];
+  const key = keyFor(residentId, ext);
+  await uploadBufferToR2(r2Client, {
+    bucket: process.env.R2_BUCKET_NAME!,
+    key,
+    body: file.buffer,
+    contentType: contentTypeFor(file.mimetype, ext),
+  });
+  return { field, url: buildPublicUrl(key) };
+}
+
+export const isImageFile = (originalname: string) => IMAGE_EXTS.has(path.extname(originalname).toLowerCase());
 
 export const uploadKyc = async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -56,22 +76,14 @@ export const uploadKyc = async (req: AuthenticatedRequest, res: Response) => {
       });
     }
 
-    const ext = path.extname(req.file.originalname).toLowerCase();
-    if (kind === 'photo' && !IMAGE_EXTS.has(ext)) {
+    if (kind === 'photo' && !isImageFile(req.file.originalname)) {
       return res.status(400).json({
         error: { code: 'BAD_REQUEST', message: 'Resident photo must be a JPG or PNG.' },
       });
     }
-    const { field, key: keyFor } = UPLOAD_KINDS[kind];
-    const key = keyFor(residentId, ext);
-
+    let stored: Awaited<ReturnType<typeof storeResidentFile>>;
     try {
-      await uploadBufferToR2(r2Client, {
-        bucket: process.env.R2_BUCKET_NAME!,
-        key,
-        body: req.file.buffer,
-        contentType: contentTypeFor(req.file.mimetype, ext),
-      });
+      stored = await storeResidentFile(residentId, kind, req.file);
     } catch (uploadError) {
       console.error('R2 upload error:', uploadError);
       return res.status(502).json({
@@ -79,8 +91,7 @@ export const uploadKyc = async (req: AuthenticatedRequest, res: Response) => {
       });
     }
 
-    const url = buildPublicUrl(key);
-
+    const { field, url } = stored;
     resident[field] = url;
     await resident.save();
 

@@ -260,45 +260,58 @@ export const getResidentById = async (req: AuthenticatedRequest, res: Response) 
   }
 };
 
+export type ResidentInput = {
+  name: string;
+  phone: string;
+  email: string | null;
+  kycType: 'Aadhaar' | 'Passport' | 'DL' | 'Other';
+  kycRef: string;
+  foodPreference: 'with_food' | 'without_food';
+  guardian: Partial<Record<'guardianName' | 'guardianPhone' | 'guardianRelation', string | null>>;
+};
+
+/** Validates a new Resident's details (shared by the owner API and self check-in links). */
+export function parseResidentInput(body: Record<string, unknown>): { error: string } | { input: ResidentInput } {
+  const { name, phone, email, kycType, kycRef, foodPreference } = body;
+  const trimmedName = typeof name === 'string' ? name.trim() : '';
+  const trimmedPhone = typeof phone === 'string' ? phone.trim() : '';
+  const trimmedKycRef = typeof kycRef === 'string' ? kycRef.trim() : '';
+  const normalizedKyc = normalizeKycType(kycType);
+
+  if (!trimmedName || !trimmedPhone || !normalizedKyc || !trimmedKycRef) {
+    return { error: 'name, phone, kycType, and kycRef are required.' };
+  }
+  if (trimmedName.length > MAX_NAME_LENGTH) {
+    return { error: `name must be ${MAX_NAME_LENGTH} characters or fewer.` };
+  }
+  if (!PHONE_REGEX.test(trimmedPhone)) {
+    return { error: 'phone must be exactly 10 digits.' };
+  }
+  const guardian = parseGuardian(body);
+  if ('error' in guardian) return guardian;
+
+  return {
+    input: {
+      name: trimmedName,
+      phone: trimmedPhone,
+      email: typeof email === 'string' && email.trim() ? email.trim() : null,
+      kycType: normalizedKyc,
+      kycRef: trimmedKycRef,
+      foodPreference: normalizeFoodPreference(foodPreference),
+      guardian: guardian.values,
+    },
+  };
+}
+
 export const createResident = async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { name, phone, email, kycType, kycRef, kycImageUrl, foodPreference, id } = req.body;
-    const trimmedName = typeof name === 'string' ? name.trim() : '';
-    const trimmedPhone = typeof phone === 'string' ? phone.trim() : '';
-    const trimmedKycRef = typeof kycRef === 'string' ? kycRef.trim() : '';
-    const normalizedKyc = normalizeKycType(kycType);
-
-    if (!trimmedName || !trimmedPhone || !normalizedKyc || !trimmedKycRef) {
-      return res.status(400).json({
-        error: {
-          code: 'BAD_REQUEST',
-          message: 'name, phone, kycType, and kycRef are required.',
-        },
-      });
+    const { kycImageUrl, id } = req.body;
+    const parsed = parseResidentInput(req.body);
+    if ('error' in parsed) {
+      return res.status(400).json({ error: { code: 'BAD_REQUEST', message: parsed.error } });
     }
-
-    if (trimmedName.length > MAX_NAME_LENGTH) {
-      return res.status(400).json({
-        error: {
-          code: 'BAD_REQUEST',
-          message: `name must be ${MAX_NAME_LENGTH} characters or fewer.`,
-        },
-      });
-    }
-
-    if (!PHONE_REGEX.test(trimmedPhone)) {
-      return res.status(400).json({
-        error: {
-          code: 'BAD_REQUEST',
-          message: 'phone must be exactly 10 digits.',
-        },
-      });
-    }
-
-    const guardian = parseGuardian(req.body);
-    if ('error' in guardian) {
-      return res.status(400).json({ error: { code: 'BAD_REQUEST', message: guardian.error } });
-    }
+    const { input } = parsed;
+    const trimmedPhone = input.phone;
 
     const existing = await Resident.findOne({
       ownerId: req.ownerId,
@@ -317,15 +330,14 @@ export const createResident = async (req: AuthenticatedRequest, res: Response) =
     const resident = new Resident({
       _id: id || uuidv4(),
       ownerId: req.ownerId,
-      name: trimmedName,
-      phone: trimmedPhone,
-      email:
-        typeof email === 'string' && email.trim() ? email.trim() : null,
-      kycType: normalizedKyc,
-      kycRef: trimmedKycRef,
+      name: input.name,
+      phone: input.phone,
+      email: input.email,
+      kycType: input.kycType,
+      kycRef: input.kycRef,
       kycImageUrl: kycImageUrl ?? null,
-      foodPreference: normalizeFoodPreference(foodPreference),
-      ...guardian.values,
+      foodPreference: input.foodPreference,
+      ...input.guardian,
     });
 
     await resident.save();
