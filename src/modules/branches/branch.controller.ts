@@ -3,6 +3,7 @@ import { AuthenticatedRequest, scopeOwnerId } from '../../middleware/auth';
 import { Branch, IBranch } from './branch.model';
 import { Room } from '../rooms/room.model';
 import { Bed } from '../beds/bed.model';
+import { Stay } from '../stays/stay.model';
 import { v4 as uuidv4 } from 'uuid';
 
 type BranchStats = {
@@ -222,11 +223,42 @@ export const deleteBranch = async (req: AuthenticatedRequest, res: Response) => 
       });
     }
 
-    branch.deletedAt = new Date();
+    const ownerId = req.ownerId!;
+    const rooms = await Room.find({ ownerId, branchId: branch._id, deletedAt: null }).select('_id');
+    const roomIds = rooms.map((r) => r._id);
+    const beds = await Bed.find({ ownerId, roomId: { $in: roomIds }, deletedAt: null }).select('_id');
+    const bedIds = beds.map((b) => b._id);
+
+    // Removing a property must never end someone's stay as a side effect.
+    const staying = await Stay.countDocuments({
+      ownerId,
+      bedId: { $in: bedIds },
+      checkOutDate: null,
+      deletedAt: null,
+    });
+    if (staying > 0) {
+      return res.status(400).json({
+        error: {
+          code: 'BRANCH_OCCUPIED',
+          message: `${branch.name} has ${staying} resident${staying === 1 ? '' : 's'} staying. Vacate them first.`,
+        },
+      });
+    }
+
+    // Soft delete the property with its rooms and beds (one timestamp, so
+    // sync pulls them together). Stays and dues are untouched: history
+    // keeps pointing at these records.
+    const now = new Date();
+    branch.deletedAt = now;
     await branch.save();
+    await Room.updateMany({ ownerId, _id: { $in: roomIds }, deletedAt: null }, { $set: { deletedAt: now } });
+    await Bed.updateMany({ ownerId, _id: { $in: bedIds }, deletedAt: null }, { $set: { deletedAt: now } });
+
     return res.status(200).json({
       success: true,
       message: 'Branch soft-deleted successfully.',
+      removedRooms: roomIds.length,
+      removedBeds: bedIds.length,
     });
   } catch (error) {
     console.error('deleteBranch error:', error);

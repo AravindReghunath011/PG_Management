@@ -8,6 +8,7 @@ import { Bed } from '../beds/bed.model';
 import { Room } from '../rooms/room.model';
 import { Branch } from '../branches/branch.model';
 import { Owner } from '../auth/owner.model';
+import { ownerAcceptsPublicLinks } from '../auth/access';
 import { Resident } from '../residents/resident.model';
 import { parseResidentInput } from '../residents/resident.controller';
 import { Stay } from '../stays/stay.model';
@@ -188,7 +189,7 @@ async function usableInvite(token: string, res: Response) {
   const invite = typeof token === 'string' && token.length >= 16
     ? await ResidentInvite.findOne({ token, deletedAt: null })
     : null;
-  if (!invite) {
+  if (!invite || !(await ownerAcceptsPublicLinks(invite.ownerId))) {
     fail(res, 404, 'INVITE_NOT_FOUND', 'This link is not valid. Ask your PG owner for a new one.');
     return null;
   }

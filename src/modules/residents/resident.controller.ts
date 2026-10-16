@@ -5,6 +5,8 @@ import { Stay } from '../stays/stay.model';
 import { Bed } from '../beds/bed.model';
 import { Room } from '../rooms/room.model';
 import { Branch } from '../branches/branch.model';
+import { Payment } from '../payments/payment.model';
+import { resolveStayPlaces, residencyStatus } from '../stays/stayPlaces';
 import { v4 as uuidv4 } from 'uuid';
 
 const ALLOWED_KYC = new Set(['Aadhaar', 'Passport', 'DL', 'Other']);
@@ -256,6 +258,79 @@ export const getResidentById = async (req: AuthenticatedRequest, res: Response) 
     console.error('getResidentById error:', error);
     return res.status(500).json({
       error: { code: 'SERVER_ERROR', message: 'Error retrieving resident.' },
+    });
+  }
+};
+
+/**
+ * Everything on record for one resident, current or past: profile, every
+ * stay (newest first, labelled even if the bed/room/property was removed)
+ * and every due. Powers the details page for moved-out residents.
+ */
+export const getResidentHistory = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const ownerId = scopeOwnerId(req);
+    const scope = ownerId ? { ownerId } : {};
+    const resident = await Resident.findOne({ _id: req.params.id, ...scope, deletedAt: null });
+    if (!resident) {
+      return res.status(404).json({
+        error: { code: 'NOT_FOUND', message: 'Resident not found.' },
+      });
+    }
+
+    const [stays, payments, occupancy] = await Promise.all([
+      Stay.find({ ...scope, residentId: resident._id, deletedAt: null }).sort({ checkInDate: -1 }),
+      Payment.find({ ...scope, residentId: resident._id, deletedAt: null }).sort({ dueDate: -1 }),
+      getOccupancyByResidentIds(ownerId, [resident._id]),
+    ]);
+    const places = await resolveStayPlaces(ownerId, stays.map((s) => s.bedId));
+
+    return res.status(200).json({
+      resident: toResidentResponse(resident, occupancy.get(resident._id)),
+      status: residencyStatus(stays),
+      stays: stays.map((s) => {
+        const place = places.get(s.bedId);
+        return {
+          id: s._id,
+          bedId: s.bedId,
+          bedLabel: place?.bedLabel ?? null,
+          roomNumber: place?.roomNumber ?? null,
+          bedNumber: place?.bedNumber ?? null,
+          branchName: place?.branchName ?? null,
+          placeRemoved: place?.placeRemoved ?? true,
+          checkInDate: s.checkInDate,
+          checkOutDate: s.checkOutDate,
+          noticeMoveOutDate: s.noticeMoveOutDate ?? null,
+          movedFromStayId: s.movedFromStayId ?? null,
+          monthlyRent: s.monthlyRent,
+          securityDeposit: s.securityDeposit,
+          depositSettlement: s.depositSettlement ?? null,
+        };
+      }),
+      payments: payments.map((p) => {
+        const totalDue = (p.rentDue || 0) + (p.electricityDue || 0) + (p.otherDue || 0);
+        const totalPaid = (p.rentPaid || 0) + (p.electricityPaid || 0) + (p.otherPaid || 0);
+        return {
+          id: p._id,
+          stayId: p.stayId,
+          dueDate: p.dueDate,
+          paidDate: p.paidDate,
+          status: p.status,
+          rentDue: p.rentDue,
+          rentPaid: p.rentPaid,
+          electricityDue: p.electricityDue,
+          electricityPaid: p.electricityPaid,
+          otherDue: p.otherDue,
+          otherPaid: p.otherPaid,
+          totalDue,
+          totalPaid,
+        };
+      }),
+    });
+  } catch (error) {
+    console.error('getResidentHistory error:', error);
+    return res.status(500).json({
+      error: { code: 'SERVER_ERROR', message: 'Error retrieving resident history.' },
     });
   }
 };

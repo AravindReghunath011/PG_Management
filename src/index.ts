@@ -6,7 +6,7 @@ import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 
 import { connectDB } from './db/connection';
-import { authenticateOwner } from './middleware/auth';
+import { authenticateOwner, authenticateOwnerAllowPending } from './middleware/auth';
 import { authenticateSuperAdmin } from './middleware/superadmin';
 import { enforceOwnerBodyScope } from './middleware/ownerScope';
 import { globalErrorHandler } from './middleware/errorHandler';
@@ -19,6 +19,7 @@ import * as roomController from './modules/rooms/room.controller';
 import * as bedController from './modules/beds/bed.controller';
 import * as residentController from './modules/residents/resident.controller';
 import * as stayController from './modules/stays/stay.controller';
+import { reviseRents } from './modules/stays/rentRevision';
 import * as paymentController from './modules/payments/payment.controller';
 import * as syncController from './modules/sync/sync.controller';
 import * as searchController from './modules/search/search.controller';
@@ -30,6 +31,8 @@ import * as adminController from './modules/admin/admin.controller';
 import * as notificationsController from './modules/notifications/notifications.controller';
 import * as inviteController from './modules/invites/invite.controller';
 import { serveJoinPage } from './modules/invites/joinPage';
+import * as joinRequestController from './modules/joinRequests/joinRequest.controller';
+import { serveApplyPage } from './modules/joinRequests/applyPage';
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -116,11 +119,24 @@ app.post(
   inviteController.submitPublicInvite
 );
 
+// Apply links (Public, reusable): pick a bed and send a request the owner approves
+app.get('/apply/:token', publicInviteLimiter, serveApplyPage);
+app.get('/api/public/join-links/:token', publicInviteLimiter, joinRequestController.getPublicJoinLink);
+app.post(
+  '/api/public/join-links/:token',
+  publicInviteLimiter,
+  kycUpload.fields([
+    { name: 'photo', maxCount: 1 },
+    { name: 'kycFront', maxCount: 1 },
+  ]),
+  joinRequestController.submitJoinRequest
+);
+
 // Apply general rate limiter to all authenticated routes
 app.use('/api', apiLimiter);
 
 // Current owner (Protected)
-app.get('/api/auth/me', authenticateOwner, authController.me);
+app.get('/api/auth/me', authenticateOwnerAllowPending, authController.me);
 app.put('/api/auth/reset-password', authenticateOwner, authController.resetPassword);
 app.put('/api/auth/settings', authenticateOwner, authController.updateSettings);
 app.put('/api/auth/profile', authenticateOwner, authController.updateProfile);
@@ -133,6 +149,14 @@ app.get('/api/dashboard/overview', authenticateOwner, dashboardController.getOve
 app.get('/api/invites', authenticateOwner, inviteController.getInvites);
 app.post('/api/invites', authenticateOwner, enforceOwnerBodyScope, inviteController.createInvite);
 app.delete('/api/invites/:id', authenticateOwner, inviteController.revokeInvite);
+
+// Apply links and the requests they collect (Protected)
+app.get('/api/join-links', authenticateOwner, joinRequestController.getJoinLinks);
+app.post('/api/join-links', authenticateOwner, enforceOwnerBodyScope, joinRequestController.createJoinLink);
+app.delete('/api/join-links/:id', authenticateOwner, joinRequestController.disableJoinLink);
+app.get('/api/join-requests', authenticateOwner, joinRequestController.getJoinRequests);
+app.post('/api/join-requests/:id/approve', authenticateOwner, joinRequestController.approveJoinRequest);
+app.post('/api/join-requests/:id/reject', authenticateOwner, joinRequestController.rejectJoinRequest);
 
 // Notifications (Protected): derived from the owner's data on every read
 app.get('/api/notifications', authenticateOwner, notificationsController.getNotifications);
@@ -191,6 +215,7 @@ app.delete('/api/beds/:id', authenticateOwner, bedController.deleteBed);
 // Residents CRUD
 app.get('/api/residents', authenticateOwner, residentController.getResidents);
 app.get('/api/residents/:id', authenticateOwner, residentController.getResidentById);
+app.get('/api/residents/:id/history', authenticateOwner, residentController.getResidentHistory);
 app.post('/api/residents', authenticateOwner, enforceOwnerBodyScope, residentController.createResident);
 app.put('/api/residents/:id', authenticateOwner, residentController.updateResident);
 app.delete('/api/residents/:id', authenticateOwner, residentController.deleteResident);
@@ -199,6 +224,8 @@ app.delete('/api/residents/:id', authenticateOwner, residentController.deleteRes
 app.get('/api/stays', authenticateOwner, stayController.getStays);
 app.get('/api/stays/:id', authenticateOwner, stayController.getStayById);
 app.post('/api/stays', authenticateOwner, enforceOwnerBodyScope, stayController.checkInResident);
+// Raise every current tenant's rent at once (preview first)
+app.post('/api/stays/rent-revision', authenticateOwner, reviseRents);
 app.put('/api/stays/:id', authenticateOwner, stayController.updateStay);
 app.get('/api/stays/:id/settlement-preview', authenticateOwner, stayController.getSettlementPreview);
 app.put('/api/stays/:id/checkout', authenticateOwner, stayController.checkOutResident);

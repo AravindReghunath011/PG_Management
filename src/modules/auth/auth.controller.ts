@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { Owner } from './owner.model';
+import { accessStatusOf, signupRequiresApproval } from './access';
 import { AuthenticatedRequest } from '../../middleware/auth';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'superSecretOwnerTokenKey123!';
@@ -50,7 +51,8 @@ export const register = async (req: Request, res: Response) => {
       name: String(name).trim(),
       email: normalizedEmail,
       passwordHash,
-      role: 'owner'
+      role: 'owner',
+      accessStatus: signupRequiresApproval() ? 'pending' : 'approved'
     });
 
     await owner.save();
@@ -71,7 +73,8 @@ export const register = async (req: Request, res: Response) => {
         mustResetPassword: owner.mustResetPassword,
         defaultDepositPaise: owner.defaultDepositPaise,
         defaultRentPaise: owner.defaultRentPaise,
-        rentDueDay: owner.rentDueDay ?? null
+        rentDueDay: owner.rentDueDay ?? null,
+        accessStatus: accessStatusOf(owner)
       }
     });
   } catch (error) {
@@ -129,6 +132,16 @@ export const login = async (req: Request, res: Response) => {
         }
       });
     }
+    // A pending owner may sign in (the app shows "waiting for approval"); a
+    // rejected one may not.
+    if (accessStatusOf(owner) === 'rejected') {
+      return res.status(403).json({
+        error: {
+          code: 'ACCOUNT_REJECTED',
+          message: 'Your account request was not approved. Contact the administrator.'
+        }
+      });
+    }
 
     const token = jwt.sign(
       { id: owner._id, email: owner.email, role: owner.role },
@@ -146,7 +159,8 @@ export const login = async (req: Request, res: Response) => {
         mustResetPassword: owner.mustResetPassword,
         defaultDepositPaise: owner.defaultDepositPaise,
         defaultRentPaise: owner.defaultRentPaise,
-        rentDueDay: owner.rentDueDay ?? null
+        rentDueDay: owner.rentDueDay ?? null,
+        accessStatus: accessStatusOf(owner)
       }
     });
   } catch (error) {
@@ -164,7 +178,7 @@ export const login = async (req: Request, res: Response) => {
 export const me = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const owner = await Owner.findById(req.ownerId).select(
-      '_id name email role mustResetPassword defaultDepositPaise defaultRentPaise rentDueDay'
+      '_id name email role mustResetPassword defaultDepositPaise defaultRentPaise rentDueDay accessStatus'
     );
     if (!owner) {
       return res.status(401).json({
@@ -182,6 +196,7 @@ export const me = async (req: AuthenticatedRequest, res: Response) => {
         defaultDepositPaise: owner.defaultDepositPaise,
         defaultRentPaise: owner.defaultRentPaise,
         rentDueDay: owner.rentDueDay ?? null,
+        accessStatus: accessStatusOf(owner),
       },
     });
   } catch (error) {
@@ -232,6 +247,7 @@ export const resetPassword = async (req: AuthenticatedRequest, res: Response) =>
         defaultDepositPaise: owner.defaultDepositPaise,
         defaultRentPaise: owner.defaultRentPaise,
         rentDueDay: owner.rentDueDay ?? null,
+        accessStatus: accessStatusOf(owner),
       },
     });
   } catch (error) {
@@ -314,6 +330,7 @@ export const updateSettings = async (req: AuthenticatedRequest, res: Response) =
         defaultDepositPaise: owner.defaultDepositPaise,
         defaultRentPaise: owner.defaultRentPaise,
         rentDueDay: owner.rentDueDay ?? null,
+        accessStatus: accessStatusOf(owner),
       },
     });
   } catch (error) {
@@ -365,6 +382,7 @@ export const updateProfile = async (req: AuthenticatedRequest, res: Response) =>
         defaultDepositPaise: owner.defaultDepositPaise,
         defaultRentPaise: owner.defaultRentPaise,
         rentDueDay: owner.rentDueDay ?? null,
+        accessStatus: accessStatusOf(owner),
       },
     });
   } catch (error) {

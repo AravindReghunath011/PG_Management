@@ -5,10 +5,10 @@ import { Stay } from '../stays/stay.model';
 import { Bed } from '../beds/bed.model';
 import { Payment } from '../payments/payment.model';
 import { Room } from '../rooms/room.model';
+import { resolveStayPlaces, residencyStatus } from '../stays/stayPlaces';
 
 /** Treat the search text literally ("+91", "(", "." aren't regex syntax). */
 const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-import { Branch } from '../branches/branch.model';
 
 // Unified search for residents
 export const searchResidents = async (req: AuthenticatedRequest, res: Response) => {
@@ -35,29 +35,18 @@ export const searchResidents = async (req: AuthenticatedRequest, res: Response) 
       ]
     });
 
-    const results = [];
-    for (const resident of residents) {
-      // Find active or past stays, newest first — this is the resident's
-      // full occupancy history, not just their current stay.
-      const stays = await Stay.find({
-        ownerId,
-        residentId: resident._id,
-        deletedAt: null
-      }).sort({ checkInDate: -1 });
+    // Every stay of every match, newest first — the full occupancy history,
+    // not just the current stay.
+    const allStays = await Stay.find({
+      ownerId,
+      residentId: { $in: residents.map((r) => r._id) },
+      deletedAt: null
+    }).sort({ checkInDate: -1 });
+    const places = await resolveStayPlaces(ownerId, allStays.map((s) => s.bedId));
 
-      const bedIds = [...new Set(stays.map((s) => s.bedId))];
-      const beds = await Bed.find({ ownerId, _id: { $in: bedIds }, deletedAt: null });
-      const bedById = new Map(beds.map((b) => [b._id, b]));
-
-      const roomIds = [...new Set(beds.map((b) => b.roomId))];
-      const rooms = await Room.find({ ownerId, _id: { $in: roomIds }, deletedAt: null });
-      const roomById = new Map(rooms.map((r) => [r._id, r]));
-
-      const branchIds = [...new Set(rooms.map((r) => r.branchId))];
-      const branches = await Branch.find({ ownerId, _id: { $in: branchIds }, deletedAt: null });
-      const branchById = new Map(branches.map((b) => [b._id, b]));
-
-      results.push({
+    const results = residents.map((resident) => {
+      const stays = allStays.filter((s) => s.residentId === resident._id);
+      return {
         resident: {
           id: resident._id,
           name: resident.name,
@@ -67,23 +56,33 @@ export const searchResidents = async (req: AuthenticatedRequest, res: Response) 
           kycRef: resident.kycRef,
           kycImageUrl: resident.kycImageUrl
         },
-        stays: stays.map(s => {
-          const bed = bedById.get(s.bedId);
-          const room = bed ? roomById.get(bed.roomId) : undefined;
-          const branch = room ? branchById.get(room.branchId) : undefined;
+        status: residencyStatus(stays),
+        stays: stays.map((s) => {
+          const place = places.get(s.bedId);
           return {
             id: s._id,
             bedId: s.bedId,
-            bedLabel: room && bed ? `${room.roomNumber}-${bed.bedNumber}` : null,
-            branchName: branch?.name ?? null,
+            bedLabel: place?.bedLabel ?? null,
+            branchName: place?.branchName ?? null,
+            placeRemoved: place?.placeRemoved ?? true,
             checkInDate: s.checkInDate,
             checkOutDate: s.checkOutDate,
+            noticeMoveOutDate: s.noticeMoveOutDate ?? null,
             monthlyRent: s.monthlyRent,
             securityDeposit: s.securityDeposit
           };
         })
-      });
-    }
+      };
+    });
+
+    // Current residents first, then past ones by most recent move-out.
+    const lastSeen = (r: (typeof results)[number]) =>
+      r.stays[0]?.checkOutDate ? new Date(r.stays[0].checkOutDate).getTime() : 0;
+    results.sort((a, b) => {
+      const aGone = a.status === 'moved_out' ? 1 : 0;
+      const bGone = b.status === 'moved_out' ? 1 : 0;
+      return aGone - bGone || lastSeen(b) - lastSeen(a) || a.resident.name.localeCompare(b.resident.name);
+    });
 
     return res.status(200).json({ results });
   } catch (error) {

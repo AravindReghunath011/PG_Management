@@ -13,6 +13,10 @@ export interface IOwner {
   // are never deleted — nothing in the codebase cascades, so a delete would
   // silently orphan their whole dataset.
   isActive: boolean;
+  // Self sign-ups start 'pending' and see no data until a superadmin approves
+  // them. Owners created before this field existed, or by a superadmin, are
+  // 'approved'.
+  accessStatus: 'approved' | 'pending' | 'rejected';
   defaultDepositPaise: number;
   defaultRentPaise: number;
   // Day of month (1–28) every resident's rent falls due; null = each stay's
@@ -42,6 +46,8 @@ const OwnerSchema = new Schema<IOwner>(
     mustResetPassword: { type: Boolean, default: false },
     // Defaults true so every pre-existing owner document stays able to log in.
     isActive: { type: Boolean, default: true },
+    // Defaults 'approved' so every pre-existing owner keeps full access.
+    accessStatus: { type: String, enum: ['approved', 'pending', 'rejected'], default: 'approved' },
     // In paise. Prefills the security deposit field on check-in; owner-configurable.
     defaultDepositPaise: { type: Number, default: 1700000 },
     // In paise. Prefills the monthly rent field on check-in; owner-configurable.

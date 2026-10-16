@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import { AuthenticatedRequest } from '../../middleware/auth';
 import { Owner } from '../auth/owner.model';
+import { accessStatusOf, type AccessStatus } from '../auth/access';
 import { Branch } from '../branches/branch.model';
 import { Room } from '../rooms/room.model';
 import { Bed } from '../beds/bed.model';
@@ -45,7 +46,7 @@ function generateTempPassword(length = 12): string {
 
 // Columns every owner-shaped response selects. Kept in one place so adding a
 // field does not mean hunting through four handlers.
-const OWNER_FIELDS = '_id name email phoneNumber role isActive mustResetPassword createdAt';
+const OWNER_FIELDS = '_id name email phoneNumber role isActive accessStatus mustResetPassword createdAt';
 
 function toOwnerSummary(
   owner: {
@@ -55,6 +56,7 @@ function toOwnerSummary(
     phoneNumber?: string;
     role: string;
     isActive?: boolean;
+    accessStatus?: AccessStatus;
     mustResetPassword?: boolean;
     createdAt?: Date;
   },
@@ -69,6 +71,7 @@ function toOwnerSummary(
     role: owner.role,
     // Owners predating the isActive field are active.
     isActive: owner.isActive !== false,
+    accessStatus: accessStatusOf(owner),
     mustResetPassword: owner.mustResetPassword ?? false,
     createdAt: owner.createdAt,
     ...stats,
@@ -227,7 +230,7 @@ export const getOwnerById = async (req: AuthenticatedRequest, res: Response) => 
 export const updateOwner = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const { name, email, phoneNumber, isActive } = req.body;
+    const { name, email, phoneNumber, isActive, accessStatus } = req.body;
 
     const owner = await Owner.findById(id);
     if (!owner) {
@@ -297,6 +300,16 @@ export const updateOwner = async (req: AuthenticatedRequest, res: Response) => {
         });
       }
       owner.isActive = isActive;
+    }
+
+    // Approve or reject a self sign-up (or move an owner back to pending).
+    if (accessStatus !== undefined) {
+      if (!['approved', 'pending', 'rejected'].includes(accessStatus)) {
+        return res.status(400).json({
+          error: { code: 'BAD_REQUEST', message: 'accessStatus must be approved, pending or rejected.' },
+        });
+      }
+      owner.accessStatus = accessStatus;
     }
 
     await owner.save();
