@@ -9,6 +9,14 @@ import { ensureMonthlyDues, voidAutoDuesFrom } from '../payments/monthlyDues';
 import { Payment } from '../payments/payment.model';
 import { PaymentTransaction } from '../payments/paymentTransaction.model';
 import { openDues, parseSettlement, settleDeposit } from './depositSettlement';
+import { resolveStayPlaces } from './stayPlaces';
+import { diffFields, logChange } from '../changeLog/changeLog';
+
+/** "101-A" for each bed, for change-log notes ("101-A → 102-B"). */
+async function bedLabels(ownerId: string, bedIds: string[]) {
+  const places = await resolveStayPlaces(ownerId, bedIds);
+  return bedIds.map((id) => places.get(id)?.bedLabel ?? 'removed bed');
+}
 
 function toStayResponse(
   stay: IStay,
@@ -164,6 +172,19 @@ export const checkInResident = async (req: AuthenticatedRequest, res: Response) 
 
     bed.status = 'occupied';
     await bed.save();
+    const [checkInPlace] = await bedLabels(ownerId, [bed._id]);
+    await logChange(req, {
+      ownerId,
+      residentId: stay.residentId,
+      stayId: stay._id,
+      action: 'stay.checked_in',
+      note: checkInPlace,
+      changes: diffFields(
+        { checkInDate: null, monthlyRent: null, securityDeposit: null } as Record<string, unknown>,
+        { checkInDate: stay.checkInDate, monthlyRent: stay.monthlyRent, securityDeposit: stay.securityDeposit },
+        ['checkInDate', 'monthlyRent', 'securityDeposit'],
+      ),
+    });
 
     await ensureMonthlyDues(ownerId, new Date(), new Date());
 
@@ -247,6 +268,20 @@ export const checkOutResident = async (req: AuthenticatedRequest, res: Response)
 
     stay.checkOutDate = checkoutTime;
     await stay.save();
+    const [checkOutPlace] = await bedLabels(ownerId, [stay.bedId]);
+    await logChange(req, {
+      ownerId,
+      residentId: stay.residentId,
+      stayId: stay._id,
+      action: 'stay.checked_out',
+      note: checkOutPlace,
+      changes: [
+        { field: 'checkOutDate', from: null, to: checkoutTime.toISOString() },
+        ...(stay.depositSettlement
+          ? [{ field: 'depositRefund', from: stay.securityDeposit, to: stay.depositSettlement.refundAmount }]
+          : []),
+      ],
+    });
 
     const bed = await Bed.findOne({ _id: stay.bedId, ownerId });
     if (bed) {
@@ -279,6 +314,7 @@ export const updateStay = async (req: AuthenticatedRequest, res: Response) => {
         error: { code: 'NOT_FOUND', message: 'Stay not found.' },
       });
     }
+    const before = stay.toObject();
 
     if (checkInDate !== undefined) {
       // Correcting a data-entry mistake on the still-open stay only — never
@@ -328,6 +364,13 @@ export const updateStay = async (req: AuthenticatedRequest, res: Response) => {
     }
 
     await stay.save();
+    await logChange(req, {
+      ownerId,
+      residentId: stay.residentId,
+      stayId: stay._id,
+      action: 'stay.updated',
+      changes: diffFields<IStay>(before, stay.toObject(), ['checkInDate', 'monthlyRent', 'securityDeposit']),
+    });
     const [enriched] = await enrichStays(ownerId, [stay]);
     return res.status(200).json(enriched);
   } catch (error) {
@@ -415,8 +458,16 @@ export const giveNotice = async (req: AuthenticatedRequest, res: Response) => {
       });
     }
 
+    const previousNotice = stay.noticeMoveOutDate ?? null;
     stay.noticeMoveOutDate = moveOut;
     await stay.save();
+    await logChange(req, {
+      ownerId,
+      residentId: stay.residentId,
+      stayId: stay._id,
+      action: 'stay.notice_given',
+      changes: diffFields({ noticeMoveOutDate: previousNotice }, { noticeMoveOutDate: moveOut }, ['noticeMoveOutDate']),
+    });
     await voidAutoDuesFrom(ownerId, stay._id, moveOut);
     const [enriched] = await enrichStays(ownerId, [stay]);
     return res.status(200).json(enriched);
@@ -442,8 +493,16 @@ export const cancelNotice = async (req: AuthenticatedRequest, res: Response) => 
       });
     }
 
+    const previousNotice = stay.noticeMoveOutDate ?? null;
     stay.noticeMoveOutDate = null;
     await stay.save();
+    await logChange(req, {
+      ownerId,
+      residentId: stay.residentId,
+      stayId: stay._id,
+      action: 'stay.notice_cancelled',
+      changes: diffFields({ noticeMoveOutDate: previousNotice }, { noticeMoveOutDate: null }, ['noticeMoveOutDate']),
+    });
     const [enriched] = await enrichStays(ownerId, [stay]);
     return res.status(200).json(enriched);
   } catch (error) {
@@ -571,6 +630,19 @@ export const moveStay = async (req: AuthenticatedRequest, res: Response) => {
       );
     }
     await ensureMonthlyDues(ownerId, new Date(), new Date(), new Date(), { stayId: next._id });
+
+    const [fromPlace, toPlace] = await bedLabels(ownerId, [stay.bedId, next.bedId]);
+    await logChange(req, {
+      ownerId,
+      residentId: stay.residentId,
+      stayId: next._id,
+      action: 'stay.moved',
+      note: `${fromPlace} → ${toPlace}`,
+      changes: [
+        { field: 'moveDate', from: null, to: when.toISOString() },
+        ...diffFields({ monthlyRent: stay.monthlyRent }, { monthlyRent: rent }, ['monthlyRent']),
+      ],
+    });
 
     const [enriched] = await enrichStays(ownerId, [next]);
     return res.status(200).json(enriched);

@@ -7,7 +7,7 @@ export interface IResident {
   phone: string;
   email: string | null;
   kycType: 'Aadhaar' | 'Passport' | 'DL' | 'Other';
-  kycRef: string;
+  kycRef: string; // ID number — optional for now ('' when not given)
   kycImageUrl: string | null; // front side
   kycBackImageUrl: string | null;
   photoUrl: string | null;
@@ -29,7 +29,7 @@ const ResidentSchema = new Schema<IResident>(
     phone: { type: String, required: true },
     email: { type: String, default: null },
     kycType: { type: String, enum: ['Aadhaar', 'Passport', 'DL', 'Other'], required: true },
-    kycRef: { type: String, required: true },
+    kycRef: { type: String, default: '' },
     kycImageUrl: { type: String, default: null },
     kycBackImageUrl: { type: String, default: null },
     photoUrl: { type: String, default: null },

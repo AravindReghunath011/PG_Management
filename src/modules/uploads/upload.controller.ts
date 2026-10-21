@@ -2,6 +2,7 @@ import path from 'path';
 import { Response } from 'express';
 import { AuthenticatedRequest } from '../../middleware/auth';
 import { Resident } from '../residents/resident.model';
+import { logChange } from '../changeLog/changeLog';
 import { r2Client, uploadBufferToR2, buildKycObjectKey, buildPublicUrl } from '../../lib/r2Client';
 
 /**
@@ -92,8 +93,15 @@ export const uploadKyc = async (req: AuthenticatedRequest, res: Response) => {
     }
 
     const { field, url } = stored;
+    const previous = resident[field] ?? null;
     resident[field] = url;
     await resident.save();
+    await logChange(req, {
+      ownerId,
+      residentId: resident._id,
+      action: 'resident.file',
+      changes: [{ field, from: previous, to: url }],
+    });
 
     return res.status(200).json({
       kind,

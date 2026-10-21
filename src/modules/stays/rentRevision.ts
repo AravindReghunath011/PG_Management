@@ -6,6 +6,7 @@ import { Bed } from '../beds/bed.model';
 import { Room } from '../rooms/room.model';
 import { Branch } from '../branches/branch.model';
 import { Resident } from '../residents/resident.model';
+import { logChange } from '../changeLog/changeLog';
 
 const fail = (res: Response, status: number, code: string, message: string) =>
   res.status(status).json({ error: { code, message } });
@@ -106,6 +107,16 @@ export const reviseRents = async (req: AuthenticatedRequest, res: Response) => {
           },
         })),
       );
+      for (const r of changed) {
+        await logChange(req, {
+          ownerId,
+          residentId: r.residentId,
+          stayId: r.stayId,
+          action: 'stay.rent_revised',
+          note: mode === 'percent' ? `Rent increase of ${value}%` : `Rent increase of ₹${value}`,
+          changes: [{ field: 'monthlyRent', from: r.oldRent, to: r.newRent }],
+        });
+      }
     }
 
     return res.json({

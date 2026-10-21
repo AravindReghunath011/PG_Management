@@ -7,6 +7,7 @@ import { Resident } from '../residents/resident.model';
 import { Bed } from '../beds/bed.model';
 import { Room } from '../rooms/room.model';
 import { v4 as uuidv4 } from 'uuid';
+import { logChange } from '../changeLog/changeLog';
 import { ensureMonthlyDues, monthKeyOf } from './monthlyDues';
 
 function parseAmountPaise(value: unknown): number | null {
@@ -229,6 +230,18 @@ export const recordPayment = async (req: AuthenticatedRequest, res: Response) =>
     if (notes !== undefined) payment.notes = notes;
 
     await payment.save();
+    await logChange(req, {
+      ownerId,
+      residentId: payment.residentId,
+      stayId: payment.stayId,
+      action: 'payment.recorded',
+      note: [paymentMode, notes].filter(Boolean).join(' • ') || null,
+      changes: [
+        { field: 'rentPaid', from: null, to: rentDelta },
+        { field: 'electricityPaid', from: null, to: electricityDelta },
+        { field: 'otherPaid', from: null, to: otherDelta },
+      ].filter((c) => (c.to ?? 0) > 0),
+    });
     const [enriched] = await enrichPayments(ownerId, [payment]);
     return res.status(200).json({
       ...enriched,

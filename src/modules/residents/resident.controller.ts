@@ -8,6 +8,7 @@ import { Branch } from '../branches/branch.model';
 import { Payment } from '../payments/payment.model';
 import { resolveStayPlaces, residencyStatus } from '../stays/stayPlaces';
 import { v4 as uuidv4 } from 'uuid';
+import { diffFields, logChange } from '../changeLog/changeLog';
 
 const ALLOWED_KYC = new Set(['Aadhaar', 'Passport', 'DL', 'Other']);
 
@@ -30,6 +31,20 @@ function normalizeFoodPreference(raw: unknown): 'with_food' | 'without_food' {
 }
 
 const PHONE_REGEX = /^[0-9]{10}$/;
+
+/** Resident fields an Owner can edit; each change is written to the change log. */
+const EDITABLE_FIELDS = [
+  'name',
+  'phone',
+  'email',
+  'kycType',
+  'kycRef',
+  'kycImageUrl',
+  'foodPreference',
+  'guardianName',
+  'guardianPhone',
+  'guardianRelation',
+] as const satisfies readonly (keyof IResident)[];
 const MAX_NAME_LENGTH = 50;
 
 const optionalText = (value: unknown) =>
@@ -353,8 +368,9 @@ export function parseResidentInput(body: Record<string, unknown>): { error: stri
   const trimmedKycRef = typeof kycRef === 'string' ? kycRef.trim() : '';
   const normalizedKyc = normalizeKycType(kycType);
 
-  if (!trimmedName || !trimmedPhone || !normalizedKyc || !trimmedKycRef) {
-    return { error: 'name, phone, kycType, and kycRef are required.' };
+  // The ID number (kycRef) is optional for now; the ID type is still needed.
+  if (!trimmedName || !trimmedPhone || !normalizedKyc) {
+    return { error: 'name, phone and kycType are required.' };
   }
   if (trimmedName.length > MAX_NAME_LENGTH) {
     return { error: `name must be ${MAX_NAME_LENGTH} characters or fewer.` };
@@ -416,6 +432,7 @@ export const createResident = async (req: AuthenticatedRequest, res: Response) =
     });
 
     await resident.save();
+    await logChange(req, { ownerId: req.ownerId!, residentId: resident._id, action: 'resident.created', note: resident.name });
     return res.status(201).json(toResidentResponse(resident));
   } catch (error) {
     console.error('createResident error:', error);
@@ -437,6 +454,7 @@ export const updateResident = async (req: AuthenticatedRequest, res: Response) =
         error: { code: 'NOT_FOUND', message: 'Resident not found.' },
       });
     }
+    const before = resident.toObject();
 
     if (typeof phone === 'string' && phone.trim() && phone.trim() !== resident.phone) {
       const trimmedPhone = phone.trim();
@@ -479,7 +497,8 @@ export const updateResident = async (req: AuthenticatedRequest, res: Response) =
     }
     const normalizedKyc = normalizeKycType(kycType);
     if (normalizedKyc) resident.kycType = normalizedKyc;
-    if (typeof kycRef === 'string' && kycRef.trim()) resident.kycRef = kycRef.trim();
+    // An empty string clears the ID number (it's optional).
+    if (typeof kycRef === 'string') resident.kycRef = kycRef.trim();
     if (kycImageUrl !== undefined) resident.kycImageUrl = kycImageUrl;
     if (foodPreference !== undefined) {
       resident.foodPreference = normalizeFoodPreference(foodPreference);
@@ -491,6 +510,12 @@ export const updateResident = async (req: AuthenticatedRequest, res: Response) =
     Object.assign(resident, guardian.values);
 
     await resident.save();
+    await logChange(req, {
+      ownerId,
+      residentId: resident._id,
+      action: 'resident.updated',
+      changes: diffFields<IResident>(before, resident.toObject(), [...EDITABLE_FIELDS]),
+    });
     const occupancy = await getOccupancyByResidentIds(ownerId, [resident._id]);
     return res
       .status(200)
@@ -531,6 +556,7 @@ export const deleteResident = async (req: AuthenticatedRequest, res: Response) =
 
     resident.deletedAt = new Date();
     await resident.save();
+    await logChange(req, { ownerId, residentId: resident._id, action: 'resident.deleted', note: resident.name });
     return res.status(200).json({
       success: true,
       message: 'Resident soft-deleted successfully.',

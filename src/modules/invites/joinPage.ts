@@ -112,7 +112,7 @@ const PAGE = `<!doctype html>
         <option value="DL">Driving Licence</option>
         <option value="Other">Other ID</option>
       </select>
-      <label class="f" for="kycRef">ID number</label>
+      <label class="f" for="kycRef">ID number <span class="opt">(optional)</span></label>
       <input type="text" id="kycRef" name="kycRef" autocomplete="off" maxlength="30">
       <div class="err" id="err-kycRef" hidden></div>
 
@@ -301,7 +301,6 @@ const PAGE = `<!doctype html>
     if (!v('name')) errors.name = 'Enter your full name.';
     if (!/^\\d{10}$/.test(v('phone'))) errors.phone = 'Enter your 10-digit mobile number.';
     if (v('guardianPhone') && !/^\\d{10}$/.test(v('guardianPhone'))) errors.guardianPhone = 'Enter a 10-digit number, or leave it empty.';
-    if (!v('kycRef')) errors.kycRef = 'Enter your ID number.';
     if (!files.kycFront) errors.kycFront = 'Add a photo of your ID.';
     if (!$('agree').checked) errors.agree = 'Please confirm your details.';
     ['photo', 'name', 'phone', 'guardianPhone', 'kycRef', 'kycFront', 'agree'].forEach(function (f) { setError(f, errors[f]); });

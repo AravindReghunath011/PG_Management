@@ -13,6 +13,7 @@ import { Resident } from '../residents/resident.model';
 import { parseResidentInput } from '../residents/resident.controller';
 import { Stay } from '../stays/stay.model';
 import { ensureMonthlyDues } from '../payments/monthlyDues';
+import { logChange } from '../changeLog/changeLog';
 import { isImageFile, storeResidentFile, type UploadKind } from '../uploads/upload.controller';
 
 const DAY = 86_400_000;
@@ -323,6 +324,19 @@ export const submitPublicInvite = async (req: Request, res: Response) => {
     claimed.residentId = residentId;
     claimed.stayId = stay._id;
     await claimed.save();
+    // Filled in by the Resident on the invite link: no signed-in Owner.
+    await logChange(null, { ownerId, residentId, action: 'resident.created', note: 'Self check-in via invite link' });
+    await logChange(null, {
+      ownerId,
+      residentId,
+      stayId: stay._id,
+      action: 'stay.checked_in',
+      changes: [
+        { field: 'checkInDate', from: null, to: stay.checkInDate.toISOString() },
+        { field: 'monthlyRent', from: null, to: stay.monthlyRent },
+        { field: 'securityDeposit', from: null, to: stay.securityDeposit },
+      ],
+    });
     await ensureMonthlyDues(ownerId, new Date(), new Date());
 
     const details = await publicDetails(claimed);

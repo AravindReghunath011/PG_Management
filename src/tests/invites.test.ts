@@ -115,7 +115,6 @@ describe('self check-in invites', () => {
     const token = tokenOf((await createInvite(auth, beds[0])).body.url);
 
     expect((await submit(token, { phone: '123' })).status).toBe(400);
-    expect((await submit(token, { kycRef: '' })).status).toBe(400);
     // The resident's photo is optional; one ID photo is enough.
     expect((await submit(token, {}, false)).status).toBe(201);
     const resident = await Resident.findOne({ phone: '9876543210' }).lean();

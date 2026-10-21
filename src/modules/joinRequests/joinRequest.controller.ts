@@ -13,6 +13,7 @@ import { Resident } from '../residents/resident.model';
 import { parseResidentInput } from '../residents/resident.controller';
 import { Stay } from '../stays/stay.model';
 import { ensureMonthlyDues } from '../payments/monthlyDues';
+import { logChange } from '../changeLog/changeLog';
 import { isImageFile, storeResidentFile } from '../uploads/upload.controller';
 
 const DAY = 86_400_000;
@@ -430,6 +431,19 @@ export const approveJoinRequest = async (req: AuthenticatedRequest, res: Respons
     claimed.stayId = stay._id;
     claimed.bedId = bedId;
     await claimed.save();
+    await logChange(req, { ownerId, residentId: request._id, action: 'resident.created', note: 'Approved from an apply-link request' });
+    await logChange(req, {
+      ownerId,
+      residentId: request._id,
+      stayId: stay._id,
+      action: 'stay.checked_in',
+      note: `${place.room.roomNumber}-${place.bed.bedNumber}`,
+      changes: [
+        { field: 'checkInDate', from: null, to: checkInDate.toISOString() },
+        { field: 'monthlyRent', from: null, to: rent },
+        { field: 'securityDeposit', from: null, to: deposit },
+      ],
+    });
     await ensureMonthlyDues(ownerId, new Date(), new Date());
 
     const [response] = await toRequestResponses(ownerId, [claimed.toObject()]);

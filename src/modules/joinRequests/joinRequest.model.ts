@@ -72,7 +72,7 @@ const JoinRequestSchema = new Schema<IJoinRequest>(
     phone: { type: String, required: true },
     email: { type: String, default: null },
     kycType: { type: String, enum: ['Aadhaar', 'Passport', 'DL', 'Other'], required: true },
-    kycRef: { type: String, required: true },
+    kycRef: { type: String, default: '' },
     kycImageUrl: { type: String, default: null },
     photoUrl: { type: String, default: null },
     guardianName: { type: String, default: null },
