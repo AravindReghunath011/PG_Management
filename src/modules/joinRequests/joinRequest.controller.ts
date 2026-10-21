@@ -9,7 +9,7 @@ import { Room } from '../rooms/room.model';
 import { Branch } from '../branches/branch.model';
 import { Owner } from '../auth/owner.model';
 import { ownerAcceptsPublicLinks } from '../auth/access';
-import { Resident } from '../residents/resident.model';
+import { Resident, residentDeletedFields, residentRestoredFields } from '../residents/resident.model';
 import { parseResidentInput } from '../residents/resident.controller';
 import { Stay } from '../stays/stay.model';
 import { ensureMonthlyDues } from '../payments/monthlyDues';
@@ -404,7 +404,7 @@ export const approveJoinRequest = async (req: AuthenticatedRequest, res: Respons
           guardianPhone: request.guardianPhone,
           guardianRelation: request.guardianRelation,
           foodPreference: request.foodPreference,
-          deletedAt: null,
+          ...residentRestoredFields(),
         },
       },
       { upsert: true, new: true, setDefaultsOnInsert: true },
@@ -422,7 +422,7 @@ export const approveJoinRequest = async (req: AuthenticatedRequest, res: Respons
         securityDeposit: deposit,
       });
     } catch (error) {
-      await Resident.updateOne({ _id: request._id, ownerId }, { $set: { deletedAt: new Date() } });
+      await Resident.updateOne({ _id: request._id, ownerId }, { $set: residentDeletedFields() });
       throw error;
     }
     await Bed.updateOne({ _id: bedId, ownerId }, { $set: { status: 'occupied' } });

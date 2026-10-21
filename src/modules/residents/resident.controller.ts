@@ -1,6 +1,6 @@
 import { Response } from 'express';
 import { AuthenticatedRequest, scopeOwnerId } from '../../middleware/auth';
-import { Resident, IResident } from './resident.model';
+import { Resident, IResident, residentDeletedFields } from './resident.model';
 import { Stay } from '../stays/stay.model';
 import { Bed } from '../beds/bed.model';
 import { Room } from '../rooms/room.model';
@@ -91,6 +91,7 @@ type ResidentResponse = {
   guardianPhone: string | null;
   guardianRelation: string | null;
   foodPreference: string;
+  isDeleted: boolean;
   currentStayId: string | null;
   currentBedId: string | null;
   currentBedNumber: string | null;
@@ -136,6 +137,7 @@ function toResidentResponse(
     guardianPhone: resident.guardianPhone ?? null,
     guardianRelation: resident.guardianRelation ?? null,
     foodPreference: resident.foodPreference ?? 'with_food',
+    isDeleted: resident.isDeleted ?? !!resident.deletedAt,
     currentStayId: occupancy?.stayId ?? null,
     currentBedId: occupancy?.bedId ?? null,
     currentBedNumber: occupancy?.bedNumber ?? null,
@@ -554,7 +556,7 @@ export const deleteResident = async (req: AuthenticatedRequest, res: Response) =
       });
     }
 
-    resident.deletedAt = new Date();
+    Object.assign(resident, residentDeletedFields());
     await resident.save();
     await logChange(req, { ownerId, residentId: resident._id, action: 'resident.deleted', note: resident.name });
     return res.status(200).json({

@@ -9,7 +9,7 @@ import { Room } from '../rooms/room.model';
 import { Branch } from '../branches/branch.model';
 import { Owner } from '../auth/owner.model';
 import { ownerAcceptsPublicLinks } from '../auth/access';
-import { Resident } from '../residents/resident.model';
+import { Resident, residentDeletedFields } from '../residents/resident.model';
 import { parseResidentInput } from '../residents/resident.controller';
 import { Stay } from '../stays/stay.model';
 import { ensureMonthlyDues } from '../payments/monthlyDues';
@@ -350,7 +350,7 @@ export const submitPublicInvite = async (req: Request, res: Response) => {
   } catch (error) {
     // Undo: hide the half-created Resident and make the link usable again.
     if (residentSaved) {
-      await Resident.updateOne({ _id: residentId, ownerId }, { $set: { deletedAt: new Date() } }).catch(() => {});
+      await Resident.updateOne({ _id: residentId, ownerId }, { $set: residentDeletedFields() }).catch(() => {});
     }
     await ResidentInvite.updateOne({ _id: invite._id }, { $set: { usedAt: null } }).catch(() => {});
 

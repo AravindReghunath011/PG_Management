@@ -19,6 +19,8 @@ export interface IResident {
   createdAt?: Date;
   updatedAt?: Date;
   deletedAt: Date | null;
+  /** True once the Owner deletes this Resident; always set together with deletedAt. */
+  isDeleted: boolean;
 }
 
 const ResidentSchema = new Schema<IResident>(
@@ -38,6 +40,7 @@ const ResidentSchema = new Schema<IResident>(
     guardianRelation: { type: String, default: null },
     foodPreference: { type: String, enum: ['with_food', 'without_food'], default: 'with_food' },
     deletedAt: { type: Date, default: null },
+    isDeleted: { type: Boolean, default: false },
   },
   {
     timestamps: true,
@@ -49,3 +52,16 @@ const ResidentSchema = new Schema<IResident>(
 ResidentSchema.index({ ownerId: 1, phone: 1, deletedAt: 1 }, { unique: true });
 
 export const Resident = model<IResident>('Resident', ResidentSchema);
+
+/** The soft-delete fields for a Resident. Never hard-delete: stays and payments point at it. */
+export const residentDeletedFields = (when = new Date()) => ({ deletedAt: when, isDeleted: true });
+export const residentRestoredFields = () => ({ deletedAt: null, isDeleted: false });
+
+/** Marks Residents deleted before isDeleted existed, so the two fields agree. Safe to run on every boot. */
+export async function backfillResidentIsDeleted() {
+  const res = await Resident.updateMany(
+    { deletedAt: { $ne: null }, isDeleted: { $ne: true } },
+    { $set: { isDeleted: true } },
+  );
+  if (res.modifiedCount) console.log(`Marked ${res.modifiedCount} deleted resident(s) isDeleted: true.`);
+}

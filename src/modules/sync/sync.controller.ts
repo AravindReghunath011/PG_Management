@@ -123,6 +123,8 @@ export const pushChanges = async (req: AuthenticatedRequest, res: Response) => {
               // Copy all fields except immutable ones
               Object.assign(existingRecord, payload);
             }
+            // Residents keep isDeleted in step with deletedAt.
+            if (Model === Resident) existingRecord.isDeleted = !!existingRecord.deletedAt;
             await existingRecord.save();
           }
         } else {
@@ -131,6 +133,7 @@ export const pushChanges = async (req: AuthenticatedRequest, res: Response) => {
             payload.deletedAt = payload.deletedAt || new Date();
           }
           const newRecord = new Model(payload);
+          if (Model === Resident) newRecord.isDeleted = !!newRecord.deletedAt;
           await newRecord.save();
         }
 

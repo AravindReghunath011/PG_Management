@@ -2,7 +2,7 @@ import { Response } from 'express';
 import { AuthenticatedRequest, scopeOwnerId } from '../../middleware/auth';
 import { Stay, IStay } from './stay.model';
 import { Bed } from '../beds/bed.model';
-import { Resident } from '../residents/resident.model';
+import { Resident, residentDeletedFields } from '../residents/resident.model';
 import { Room } from '../rooms/room.model';
 import { v4 as uuidv4 } from 'uuid';
 import { ensureMonthlyDues, voidAutoDuesFrom } from '../payments/monthlyDues';
@@ -212,7 +212,10 @@ export const checkInResident = async (req: AuthenticatedRequest, res: Response) 
 export const checkOutResident = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const { checkOutDate, settlement } = req.body;
+    // deleteResident: true = "Delete tenant" — check out, then soft-delete the
+    // Resident (deletedAt + isDeleted). Without it this is a plain move-out
+    // and they stay findable as a past tenant.
+    const { checkOutDate, settlement, deleteResident } = req.body;
     const ownerId = req.ownerId!;
 
     const parsedSettlement = settlement !== undefined && settlement !== null ? parseSettlement(settlement) : null;
@@ -287,6 +290,15 @@ export const checkOutResident = async (req: AuthenticatedRequest, res: Response)
     if (bed) {
       bed.status = 'vacant';
       await bed.save();
+    }
+
+    if (deleteResident === true) {
+      const resident = await Resident.findOne({ _id: stay.residentId, ownerId, deletedAt: null });
+      if (resident) {
+        Object.assign(resident, residentDeletedFields());
+        await resident.save();
+        await logChange(req, { ownerId, residentId: resident._id, action: 'resident.deleted', note: resident.name });
+      }
     }
 
     const [enriched] = await enrichStays(ownerId, [stay]);

@@ -6,6 +6,7 @@ import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 
 import { connectDB } from './db/connection';
+import { backfillResidentIsDeleted } from './modules/residents/resident.model';
 import { authenticateOwner, authenticateOwnerAllowPending } from './middleware/auth';
 import { authenticateSuperAdmin } from './middleware/superadmin';
 import { enforceOwnerBodyScope } from './middleware/ownerScope';
@@ -90,7 +91,7 @@ app.use(express.json({ limit: '1mb' }));
 
 // ── Boot Database ─────────────────────────────────────────────────
 if (process.env.NODE_ENV !== 'test') {
-  connectDB();
+  connectDB().then(() => backfillResidentIsDeleted()).catch((err) => console.error('isDeleted backfill failed:', err));
 }
 
 // ──────────────────────────────────────────────────────────────────
