@@ -11,7 +11,8 @@ export interface IOwner {
   // Superadmin-controlled access switch. false blocks login while leaving every
   // branch/room/bed/resident/stay this owner owns intact and readable. Owners
   // are never deleted — nothing in the codebase cascades, so a delete would
-  // silently orphan their whole dataset.
+  // silently orphan their whole dataset. An owner deleting their own account
+  // just turns this off.
   isActive: boolean;
   // Self sign-ups start 'pending' and see no data until a superadmin approves
   // them. Owners created before this field existed, or by a superadmin, are

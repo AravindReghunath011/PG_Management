@@ -31,6 +31,8 @@ import * as reportsController from './modules/reports/reports.controller';
 import * as expenseController from './modules/expenses/expense.controller';
 import * as adminController from './modules/admin/admin.controller';
 import * as notificationsController from './modules/notifications/notifications.controller';
+import * as pushController from './modules/push/push.controller';
+import { startPushScheduler } from './modules/push/pushAlerts';
 import * as inviteController from './modules/invites/invite.controller';
 import { serveJoinPage } from './modules/invites/joinPage';
 import * as joinRequestController from './modules/joinRequests/joinRequest.controller';
@@ -92,6 +94,8 @@ app.use(express.json({ limit: '1mb' }));
 // ── Boot Database ─────────────────────────────────────────────────
 if (process.env.NODE_ENV !== 'test') {
   connectDB().then(() => backfillResidentIsDeleted()).catch((err) => console.error('isDeleted backfill failed:', err));
+  // Push alerts need the DB; the first sweep's queries buffer until it connects.
+  startPushScheduler();
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -142,6 +146,7 @@ app.get('/api/auth/me', authenticateOwnerAllowPending, authController.me);
 app.put('/api/auth/reset-password', authenticateOwner, authController.resetPassword);
 app.put('/api/auth/settings', authenticateOwner, authController.updateSettings);
 app.put('/api/auth/profile', authenticateOwner, authController.updateProfile);
+app.delete('/api/auth/account', authenticateOwner, authController.deleteAccount);
 
 // Dashboard (Protected)
 app.get('/api/dashboard/stats', authenticateOwner, dashboardController.getStats);
@@ -163,6 +168,10 @@ app.post('/api/join-requests/:id/reject', authenticateOwner, joinRequestControll
 // Notifications (Protected): derived from the owner's data on every read
 app.get('/api/notifications', authenticateOwner, notificationsController.getNotifications);
 app.put('/api/notifications/seen', authenticateOwner, notificationsController.markNotificationsSeen);
+
+// Push notifications (Protected): the phones that receive this owner's alerts
+app.post('/api/push/tokens', authenticateOwner, pushController.registerPushToken);
+app.delete('/api/push/tokens', authenticateOwner, pushController.unregisterPushToken);
 
 // Admin (Protected — superadmin only): platform-wide owner list/detail
 app.get('/api/admin/owners', authenticateOwner, authenticateSuperAdmin, adminController.getOwners);

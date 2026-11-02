@@ -392,3 +392,32 @@ export const updateProfile = async (req: AuthenticatedRequest, res: Response) =>
     });
   }
 };
+
+/** Lets the signed-in owner delete their own account: it becomes inactive, so
+ * they can no longer sign in. Everything they own is kept. */
+export const deleteAccount = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const owner = await Owner.findById(req.ownerId);
+    if (!owner) {
+      return res.status(401).json({
+        error: { code: 'UNAUTHORIZED', message: 'Owner not found.' },
+      });
+    }
+
+    if (owner.role === 'superadmin') {
+      return res.status(403).json({
+        error: { code: 'FORBIDDEN', message: 'Superadmin accounts cannot be deleted here.' },
+      });
+    }
+
+    owner.isActive = false;
+    await owner.save();
+
+    return res.status(200).json({ deleted: true });
+  } catch (error) {
+    console.error('Delete account error:', error);
+    return res.status(500).json({
+      error: { code: 'INTERNAL_SERVER_ERROR', message: 'Something went wrong deleting your account.' },
+    });
+  }
+};

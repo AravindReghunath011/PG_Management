@@ -46,6 +46,12 @@ The signed-in owner's own name: `{ name }` (1–60 chars, whitespace collapsed).
 `200` → `{ owner }` (same shape as `/api/auth/me`). The email can't be changed
 here — it is the login (admins can change it).
 
+### `DELETE /api/auth/account`
+The signed-in owner deletes their own account, which sets `isActive` to false.
+Nothing else changes: their data is kept and the email stays reserved.
+`200` → `{ deleted: true }`. `403 FORBIDDEN` for a superadmin. Signing in or
+using an existing token afterwards returns `403 ACCOUNT_DEACTIVATED`.
+
 ---
 
 ## Dashboard
@@ -211,6 +217,20 @@ Fields: `file` (jpg/png/pdf ≤5MB), `residentId`, `kind?`
 `200` → `{ kind, url, kycImageUrl, residentId }` — persists `url` on the resident's field for that kind.
 
 Static files: `GET /uploads/*`
+
+---
+
+## Push notifications
+### `POST /api/push/tokens`
+Body: `{ token, platform }` — `token` is an Expo push token (`ExponentPushToken[...]`), `platform` is `android` | `ios`.  
+`204`. Idempotent; a token already registered to another owner moves to the caller.
+
+### `DELETE /api/push/tokens`
+Body: `{ token }`. `204`. Stops pushes to that phone (only if it belongs to the caller).
+
+The server checks every `PUSH_SWEEP_MINUTES` (default 30), 08:00–21:00 IST, and pushes each new
+`rent_overdue` / `rent_due_soon` / `notice_ending` / `move_out_passed` alert once. More than 3 new
+alerts in one check are sent as a single summary push. Push `data`: `{ url: "/notifications", alertId? }`.
 
 ---
 
