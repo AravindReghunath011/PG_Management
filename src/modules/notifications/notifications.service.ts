@@ -1,6 +1,8 @@
 import { Payment } from '../payments/payment.model';
 import { Stay } from '../stays/stay.model';
 import { Resident } from '../residents/resident.model';
+import { Bed } from '../beds/bed.model';
+import { Room } from '../rooms/room.model';
 import { ensureMonthlyDues } from '../payments/monthlyDues';
 
 /**
@@ -31,6 +33,26 @@ const rupees = (paise: number) => `₹${Math.round(paise / 100).toLocaleString('
 const dayMonth = (d: Date) =>
   d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' });
 
+/**
+ * "Room 101, Bed A" per stay. Includes checked-out stays and soft-deleted beds
+ * and rooms, because a due can outlive both and still has to say where it was.
+ */
+async function placesByStay(ownerId: string, stayIds: string[]): Promise<Map<string, string>> {
+  const stays = await Stay.find({ ownerId, _id: { $in: stayIds } }).select('_id bedId').lean();
+  const beds = await Bed.find({ ownerId, _id: { $in: stays.map((s) => s.bedId) } }).select('_id roomId bedNumber').lean();
+  const rooms = await Room.find({ ownerId, _id: { $in: beds.map((b) => b.roomId) } }).select('_id roomNumber').lean();
+  const bedById = new Map(beds.map((b) => [b._id, b]));
+  const roomById = new Map(rooms.map((r) => [r._id, r]));
+
+  const places = new Map<string, string>();
+  for (const stay of stays) {
+    const bed = bedById.get(stay.bedId);
+    const room = bed && roomById.get(bed.roomId);
+    if (bed && room) places.set(stay._id, `Room ${room.roomNumber}, Bed ${bed.bedNumber}`);
+  }
+  return places;
+}
+
 export async function buildNotifications(ownerId: string, now = new Date()): Promise<NotificationItem[]> {
   await ensureMonthlyDues(ownerId, now, now);
 
@@ -51,6 +73,12 @@ export async function buildNotifications(ownerId: string, now = new Date()): Pro
   const residentById = new Map(residents.map((r) => [r._id, r]));
   const name = (id: string) => residentById.get(id)?.name ?? 'A resident';
 
+  const places = await placesByStay(ownerId, [...new Set([...openDues.map((d) => d.stayId), ...openStays.map((s) => s._id)])]);
+  const at = (stayId: string) => {
+    const place = places.get(stayId);
+    return place ? `${place} · ` : '';
+  };
+
   const items: NotificationItem[] = [];
 
   for (const due of openDues) {
@@ -63,8 +91,8 @@ export async function buildNotifications(ownerId: string, now = new Date()): Pro
       severity: overdue ? 'high' : 'medium',
       title: overdue ? `Rent overdue — ${name(due.residentId)}` : `Rent due soon — ${name(due.residentId)}`,
       body: overdue
-        ? `${rupees(balance)} pending since ${dayMonth(due.dueDate)}.`
-        : `${rupees(balance)} due on ${dayMonth(due.dueDate)}.`,
+        ? `${at(due.stayId)}${rupees(balance)} pending since ${dayMonth(due.dueDate)}.`
+        : `${at(due.stayId)}${rupees(balance)} due on ${dayMonth(due.dueDate)}.`,
       // "Due soon" becomes news when it enters the window, not on the due date.
       date: overdue ? due.dueDate : new Date(due.dueDate.getTime() - DUE_SOON_DAYS * DAY),
       residentId: due.residentId,
@@ -82,7 +110,7 @@ export async function buildNotifications(ownerId: string, now = new Date()): Pro
           type: 'move_out_passed',
           severity: 'high',
           title: `Move-out date passed — ${name(stay.residentId)}`,
-          body: `Was due to leave on ${dayMonth(stay.noticeMoveOutDate)}. Vacate & settle the deposit to free the bed.`,
+          body: `${at(stay._id)}Was due to leave on ${dayMonth(stay.noticeMoveOutDate)}. Vacate & settle the deposit to free the bed.`,
           date: stay.noticeMoveOutDate,
           residentId: stay.residentId,
         });
@@ -92,7 +120,7 @@ export async function buildNotifications(ownerId: string, now = new Date()): Pro
           type: 'notice_ending',
           severity: 'medium',
           title: `${name(stay.residentId)} moves out ${days === 0 ? 'today' : `in ${days} day${days === 1 ? '' : 's'}`}`,
-          body: `Notice period ends ${dayMonth(stay.noticeMoveOutDate)}. Plan the deposit settlement.`,
+          body: `${at(stay._id)}Notice period ends ${dayMonth(stay.noticeMoveOutDate)}. Plan the deposit settlement.`,
           // Dated when it enters the window, so it shows as new then.
           date: new Date(stay.noticeMoveOutDate.getTime() - NOTICE_WINDOW_DAYS * DAY),
           residentId: stay.residentId,
