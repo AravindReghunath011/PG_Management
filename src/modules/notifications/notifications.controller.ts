@@ -1,7 +1,7 @@
 import { Response } from 'express';
 import { AuthenticatedRequest } from '../../middleware/auth';
 import { Owner } from '../auth/owner.model';
-import { buildNotifications } from './notifications.service';
+import { buildNotifications, routeFor } from './notifications.service';
 
 export const getNotifications = async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -11,7 +11,7 @@ export const getNotifications = async (req: AuthenticatedRequest, res: Response)
       Owner.findById(ownerId).select('notificationsSeenAt').lean(),
     ]);
     const seenAt = owner?.notificationsSeenAt ?? null;
-    const withRead = items.map((i) => ({ ...i, unread: !seenAt || i.date > seenAt }));
+    const withRead = items.map((i) => ({ ...i, route: routeFor(i), unread: !seenAt || i.date > seenAt }));
     return res.status(200).json({
       items: withRead,
       unreadCount: withRead.filter((i) => i.unread).length,

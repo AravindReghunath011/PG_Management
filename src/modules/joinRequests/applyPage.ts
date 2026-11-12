@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { Request, Response } from 'express';
 
 import { PUBLIC_PAGE_CSS, publicPageCsp } from '../invites/publicPageStyles';
+import { PUBLIC_FORM_CHECKS } from '../invites/publicFormChecks';
 
 /**
  * GET /apply/:token — the reusable "apply to stay" page. The visitor picks a
@@ -13,7 +14,11 @@ export const serveApplyPage = (_req: Request, res: Response) => {
   res.setHeader('Content-Security-Policy', publicPageCsp(nonce));
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Referrer-Policy', 'no-referrer');
-  res.type('html').send(PAGE.replace('__CSS__', PUBLIC_PAGE_CSS).replace(/__NONCE__/g, nonce));
+  res.type('html').send(
+    PAGE.replace('__CSS__', PUBLIC_PAGE_CSS)
+      .replace('__CHECKS__', () => PUBLIC_FORM_CHECKS)
+      .replace(/__NONCE__/g, nonce),
+  );
 };
 
 const PAGE = `<!doctype html>
@@ -30,14 +35,19 @@ const PAGE = `<!doctype html>
     width: 100%; height: 48px; padding: 0 14px; border-radius: 12px; border: 1px solid var(--border);
     background: #fff; color: var(--text); font: inherit; font-size: 16px; outline: none;
   }
-  .room { border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-top: 10px; }
-  .room .title { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-  .room .num { font-weight: 700; font-size: 15px; }
-  .room .meta { font-size: 12.5px; color: var(--muted); }
-  .beds { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-  .bed { border: 1.5px solid var(--border); background: #fff; border-radius: 10px; padding: 8px 12px; font: inherit; text-align: left; cursor: pointer; min-width: 96px; }
-  .bed .b { font-weight: 700; font-size: 14px; color: var(--text); }
-  .bed .r { font-size: 12.5px; color: var(--muted); }
+  .step { font-weight: 700; font-size: 15px; margin: 16px 0 8px; }
+  .step .n { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 12px; background: var(--blue); color: #fff; font-size: 13px; margin-right: 8px; }
+  .rooms { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+  .room { border: 1.5px solid var(--border); background: #fff; border-radius: 12px; padding: 12px; font: inherit; text-align: left; cursor: pointer; }
+  .room .num { display: block; font-weight: 700; font-size: 16px; color: var(--text); }
+  .room .meta { display: block; font-size: 13px; color: var(--muted); margin-top: 3px; }
+  .room .free { display: block; font-size: 13px; color: #15803d; font-weight: 600; margin-top: 6px; }
+  .room[aria-pressed=true] { border-color: var(--blue); background: var(--blue-tint); }
+  .room[aria-pressed=true] .num { color: var(--blue); }
+  .beds { display: flex; flex-wrap: wrap; gap: 10px; }
+  .bed { border: 1.5px solid var(--border); background: #fff; border-radius: 12px; padding: 10px 14px; font: inherit; text-align: left; cursor: pointer; min-width: 110px; }
+  .bed .b { font-weight: 700; font-size: 15px; color: var(--text); }
+  .bed .r { font-size: 13px; color: var(--muted); }
   .bed[aria-pressed=true] { border-color: var(--blue); background: var(--blue-tint); }
   .bed[aria-pressed=true] .b, .bed[aria-pressed=true] .r { color: var(--blue); }
   .chosen { background: var(--blue-tint); color: var(--blue); border-radius: 12px; padding: 12px 14px; margin-top: 14px; font-weight: 600; font-size: 14px; }
@@ -65,26 +75,32 @@ const PAGE = `<!doctype html>
       <h2>Choose your bed</h2>
       <p class="hint" id="depositHint">Prices are per bed, per month.</p>
       <div id="branchWrap" hidden>
-        <label class="f" for="branch">Property</label>
+        <label class="f" for="branch">PG</label>
         <select id="branch"></select>
       </div>
-      <div id="rooms"></div>
+      <div class="step"><span class="n">1</span>Choose a room</div>
+      <div class="rooms" id="rooms"></div>
+      <div id="bedStep" hidden>
+        <div class="step"><span class="n">2</span><span id="bedStepTitle">Choose a bed</span></div>
+        <div class="beds" id="beds"></div>
+      </div>
       <div class="chosen" id="chosen" hidden></div>
       <div class="err" id="err-bed" hidden></div>
 
-      <label class="f" for="moveIn">When do you want to move in?</label>
+      <label class="f" for="moveIn">Move-in date</label>
+      <p class="hint">The day you joined, or will join, this PG.</p>
       <input type="date" id="moveIn">
       <div class="err" id="err-moveIn" hidden></div>
     </section>
 
     <section class="card">
-      <h2>Your photo <span class="opt k">(optional)</span></h2>
-      <p class="hint">Used on your gate pass.</p>
+      <h2>Your photo</h2>
       <div class="photoRow">
         <div class="avatar" id="photoPreview">Photo</div>
         <div class="btns">
           <button type="button" class="btn solid" data-pick="photoCamera">📷 Take photo</button>
           <button type="button" class="btn" data-pick="photoFile">Upload</button>
+          <button type="button" class="btn danger" id="photoRemove" hidden>✕ Remove</button>
         </div>
       </div>
       <input class="sr" type="file" id="photoCamera" accept="image/*" capture="user" tabindex="-1">
@@ -102,8 +118,9 @@ const PAGE = `<!doctype html>
       <input type="tel" id="phone" autocomplete="tel-national" inputmode="numeric" maxlength="10" placeholder="10-digit number">
       <div class="err" id="err-phone" hidden></div>
 
-      <label class="f" for="email">Email <span class="opt">(optional)</span></label>
+      <label class="f" for="email">Email</label>
       <input type="email" id="email" autocomplete="email" placeholder="you@example.com">
+      <div class="err" id="err-email" hidden></div>
 
       <label class="f">Food</label>
       <div class="chips" role="group" aria-label="Food preference">
@@ -113,9 +130,10 @@ const PAGE = `<!doctype html>
     </section>
 
     <section class="card">
-      <h2>Parent / emergency contact <span class="opt k">(optional)</span></h2>
+      <h2>Parent / emergency contact</h2>
       <label class="f" for="guardianName">Name</label>
       <input type="text" id="guardianName" maxlength="50">
+      <div class="err" id="err-guardianName" hidden></div>
       <label class="f" for="guardianRelation">Relation</label>
       <input type="text" id="guardianRelation" placeholder="Father, Mother, Brother…">
       <label class="f" for="guardianPhone">Mobile number</label>
@@ -125,7 +143,7 @@ const PAGE = `<!doctype html>
 
     <section class="card">
       <h2>ID proof</h2>
-      <p class="hint">Take a clear photo, or upload a JPG, PNG or PDF (max 5 MB).</p>
+      <p class="hint">Add the front, and the back if your ID has one. Take a clear photo, or upload a JPG, PNG or PDF (max 5 MB).</p>
       <label class="f" for="kycType">ID type</label>
       <select id="kycType">
         <option value="Aadhaar">Aadhaar Card</option>
@@ -133,24 +151,37 @@ const PAGE = `<!doctype html>
         <option value="DL">Driving Licence</option>
         <option value="Other">Other ID</option>
       </select>
-      <label class="f" for="kycRef">ID number <span class="opt">(optional)</span></label>
-      <input type="text" id="kycRef" autocomplete="off" maxlength="30">
+      <label class="f" for="kycRef">ID number</label>
+      <input type="text" id="kycRef" autocomplete="off" maxlength="30" inputmode="numeric" placeholder="12-digit number">
       <div class="err" id="err-kycRef" hidden></div>
 
       <div class="doc">
-        <div class="row"><span class="name">ID photo</span><span class="file" id="kycFrontName"></span></div>
+        <div class="row"><span class="name">Front side</span><span class="file" id="kycFrontName"></span></div>
         <div class="btns">
           <button type="button" class="btn solid" data-pick="kycFrontCamera">📷 Take photo</button>
           <button type="button" class="btn" data-pick="kycFrontFile">Upload file</button>
+          <button type="button" class="btn danger" id="kycFrontRemove" hidden>✕ Remove</button>
         </div>
         <img class="preview" id="kycFrontPreview" alt="ID preview" hidden>
         <div class="err" id="err-kycFront" hidden></div>
       </div>
       <input class="sr" type="file" id="kycFrontCamera" accept="image/*" capture="environment" tabindex="-1">
       <input class="sr" type="file" id="kycFrontFile" accept="image/jpeg,image/png,application/pdf" tabindex="-1">
+      <div class="doc">
+        <div class="row"><span class="name">Back side</span><span class="file" id="kycBackName"></span></div>
+        <div class="btns">
+          <button type="button" class="btn solid" data-pick="kycBackCamera">📷 Take photo</button>
+          <button type="button" class="btn" data-pick="kycBackFile">Upload file</button>
+          <button type="button" class="btn danger" id="kycBackRemove" hidden>✕ Remove</button>
+        </div>
+        <img class="preview" id="kycBackPreview" alt="ID back preview" hidden>
+        <div class="err" id="err-kycBack" hidden></div>
+      </div>
+      <input class="sr" type="file" id="kycBackCamera" accept="image/*" capture="environment" tabindex="-1">
+      <input class="sr" type="file" id="kycBackFile" accept="image/jpeg,image/png,application/pdf" tabindex="-1">
     </section>
 
-    <label class="check"><input type="checkbox" id="agree"> <span>I confirm these details are correct and belong to me.</span></label>
+    <label class="check"><input type="checkbox" id="agree"> <span>I confirm these details are correct and belong to me. They will be shared only with the owner of <b id="consentPg">this PG</b>.</span></label>
     <div class="err" id="err-agree" hidden></div>
 
     <div class="banner error" id="formError" hidden></div>
@@ -165,10 +196,12 @@ const PAGE = `<!doctype html>
   var api = '/api/public/join-links/' + encodeURIComponent(token);
   var MAX_BYTES = 5 * 1024 * 1024;
   var $ = function (id) { return document.getElementById(id); };
-  var files = { photo: null, kycFront: null };
+  var files = { photo: null, kycFront: null, kycBack: null };
   var food = 'with_food';
   var data = null;
   var chosenBed = null;
+  var chosenRoomId = null;
+__CHECKS__
 
   var rupees = function (paise) { return '₹' + Math.round(paise / 100).toLocaleString('en-IN'); };
   var iso = function (d) {
@@ -206,35 +239,62 @@ const PAGE = `<!doctype html>
     return node;
   }
 
+  function currentBranch() {
+    return data.branches.find(function (b) { return b.id === $('branch').value; }) || data.branches[0];
+  }
+
+  // Step 1: the rooms with a free bed. Step 2 (after a room is picked): only that room's beds.
   function renderRooms() {
-    var branch = data.branches.find(function (b) { return b.id === $('branch').value; }) || data.branches[0];
+    var branch = currentBranch();
     var box = $('rooms');
     box.textContent = '';
     branch.rooms.forEach(function (room) {
-      var card = el('div', 'room');
-      var title = el('div', 'title');
-      title.appendChild(el('span', 'num', 'Room ' + room.roomNumber));
+      var btn = el('button', 'room');
+      btn.type = 'button';
+      btn.setAttribute('aria-pressed', String(room.id === chosenRoomId));
+      btn.appendChild(el('span', 'num', 'Room ' + room.roomNumber));
       var floor = room.floor === 0 ? 'Ground floor' : 'Floor ' + room.floor;
-      title.appendChild(el('span', 'meta', floor + (room.isAc ? ' · AC' : '')));
-      card.appendChild(title);
-      var beds = el('div', 'beds');
-      room.beds.forEach(function (bed) {
-        var btn = el('button', 'bed');
-        btn.type = 'button';
-        btn.setAttribute('aria-pressed', String(!!chosenBed && chosenBed.id === bed.id));
-        btn.appendChild(el('div', 'b', 'Bed ' + bed.bedNumber));
-        btn.appendChild(el('div', 'r', rupees(bed.rentPaise) + ' / mo'));
-        btn.addEventListener('click', function () {
-          chosenBed = { id: bed.id, label: branch.name + ' · Room ' + room.roomNumber + ' · Bed ' + bed.bedNumber, rent: bed.rentPaise };
-          $('chosen').textContent = 'Selected: ' + chosenBed.label + ' — ' + rupees(bed.rentPaise) + ' / month';
-          $('chosen').hidden = false;
-          setError('bed', '');
-          renderRooms();
-        });
-        beds.appendChild(btn);
+      btn.appendChild(el('span', 'meta', floor + (room.isAc ? ' · AC' : '')));
+      var cheapest = Math.min.apply(null, room.beds.map(function (b) { return b.rentPaise; }));
+      btn.appendChild(el('span', 'meta', 'From ' + rupees(cheapest) + ' a month'));
+      var n = room.beds.length;
+      btn.appendChild(el('span', 'free', n + (n === 1 ? ' bed free' : ' beds free')));
+      btn.addEventListener('click', function () {
+        if (chosenRoomId !== room.id) {
+          chosenRoomId = room.id;
+          chosenBed = null;
+          $('chosen').hidden = true;
+        }
+        renderRooms();
+        if ($('bedStep').scrollIntoView) $('bedStep').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       });
-      card.appendChild(beds);
-      box.appendChild(card);
+      box.appendChild(btn);
+    });
+    renderBeds();
+  }
+
+  function renderBeds() {
+    var branch = currentBranch();
+    var room = branch.rooms.find(function (r) { return r.id === chosenRoomId; });
+    $('bedStep').hidden = !room;
+    var box = $('beds');
+    box.textContent = '';
+    if (!room) return;
+    $('bedStepTitle').textContent = 'Choose a bed in Room ' + room.roomNumber;
+    room.beds.forEach(function (bed) {
+      var btn = el('button', 'bed');
+      btn.type = 'button';
+      btn.setAttribute('aria-pressed', String(!!chosenBed && chosenBed.id === bed.id));
+      btn.appendChild(el('div', 'b', 'Bed ' + bed.bedNumber));
+      btn.appendChild(el('div', 'r', rupees(bed.rentPaise) + ' a month'));
+      btn.addEventListener('click', function () {
+        chosenBed = { id: bed.id, label: branch.name + ' · Room ' + room.roomNumber + ' · Bed ' + bed.bedNumber, rent: bed.rentPaise };
+        $('chosen').textContent = 'You chose: ' + chosenBed.label + ' — ' + rupees(bed.rentPaise) + ' a month';
+        $('chosen').hidden = false;
+        setError('bed', '');
+        renderBeds();
+      });
+      box.appendChild(btn);
     });
   }
 
@@ -247,6 +307,7 @@ const PAGE = `<!doctype html>
     }
     data = res.body;
     $('pgName').textContent = data.pgName;
+    $('consentPg').textContent = data.pgName;
     document.title = 'Apply · ' + data.pgName;
     if (!data.branches.length) {
       return showState('bad', 'No beds free right now', 'Every bed is taken at the moment. Please check with the PG later.');
@@ -259,12 +320,20 @@ const PAGE = `<!doctype html>
         $('branch').appendChild(option);
       });
       $('branchWrap').hidden = false;
-      $('branch').addEventListener('change', renderRooms);
+      $('branch').addEventListener('change', function () {
+        chosenRoomId = null;
+        chosenBed = null;
+        $('chosen').hidden = true;
+        renderRooms();
+      });
     }
     var today = new Date();
-    $('moveIn').min = iso(today);
+    // People already staying use this link too, so past dates are fine.
+    $('moveIn').min = iso(new Date(today.getTime() - 3 * 365 * 86400000));
     $('moveIn').max = iso(new Date(today.getTime() + 365 * 86400000));
     $('moveIn').value = iso(today);
+    var first = data.branches[0];
+    if (data.branches.length === 1 && first.rooms.length === 1) chosenRoomId = first.rooms[0].id;
     renderRooms();
     $('loading').hidden = true;
     $('form').hidden = false;
@@ -320,6 +389,7 @@ const PAGE = `<!doctype html>
         if (problem) return setError(slot, problem);
         files[slot] = file;
         setError(slot, '');
+        $(slot + 'Remove').hidden = false;
         var preview = file.type.indexOf('image/') === 0 ? URL.createObjectURL(file) : null;
         if (slot === 'photo') {
           var box = $('photoPreview');
@@ -337,10 +407,26 @@ const PAGE = `<!doctype html>
       });
     });
   }
+  function clearFile(slot) {
+    files[slot] = null;
+    $(slot + 'Remove').hidden = true;
+    if (slot === 'photo') {
+      $('photoPreview').textContent = 'Photo';
+    } else {
+      $(slot + 'Name').textContent = '';
+      $(slot + 'Preview').hidden = true;
+      $(slot + 'Preview').removeAttribute('src');
+    }
+  }
+  $('photoRemove').addEventListener('click', function () { clearFile('photo'); });
+  $('kycFrontRemove').addEventListener('click', function () { clearFile('kycFront'); });
+  $('kycBackRemove').addEventListener('click', function () { clearFile('kycBack'); });
   wire('photoCamera', 'photo');
   wire('photoFile', 'photo');
   wire('kycFrontCamera', 'kycFront');
   wire('kycFrontFile', 'kycFront');
+  wire('kycBackCamera', 'kycBack');
+  wire('kycBackFile', 'kycBack');
 
   document.querySelectorAll('[data-food]').forEach(function (chip) {
     chip.addEventListener('click', function () {
@@ -351,26 +437,20 @@ const PAGE = `<!doctype html>
     });
   });
 
-  ['phone', 'guardianPhone'].forEach(function (id) {
-    $(id).addEventListener('input', function () { this.value = this.value.replace(/\\D/g, '').slice(0, 10); });
-  });
-  ['name', 'phone', 'guardianPhone', 'kycRef', 'moveIn'].forEach(function (id) {
-    $(id).addEventListener('input', function () { setError(id, ''); });
-  });
+  wireDetailInputs($, setError);
+  $('moveIn').addEventListener('input', function () { setError('moveIn', ''); });
   $('agree').addEventListener('change', function () { setError('agree', ''); });
 
   // ── Submit ─────────────────────────────────────────────────────
   function validate() {
     var v = function (id) { return $(id).value.trim(); };
     var errors = {};
-    if (!chosenBed) errors.bed = 'Choose a bed above.';
+    if (!chosenBed) errors.bed = chosenRoomId ? 'Choose a bed in this room.' : 'Choose a room, then a bed.';
     if (!v('moveIn')) errors.moveIn = 'Choose your move-in date.';
-    if (!v('name')) errors.name = 'Enter your full name.';
-    if (!/^\\d{10}$/.test(v('phone'))) errors.phone = 'Enter your 10-digit mobile number.';
-    if (v('guardianPhone') && !/^\\d{10}$/.test(v('guardianPhone'))) errors.guardianPhone = 'Enter a 10-digit number, or leave it empty.';
-    if (!files.kycFront) errors.kycFront = 'Add a photo of your ID.';
+    var details = checkDetails(v);
+    Object.keys(details).forEach(function (k) { errors[k] = details[k]; });
     if (!$('agree').checked) errors.agree = 'Please confirm your details.';
-    ['bed', 'moveIn', 'name', 'phone', 'guardianPhone', 'kycRef', 'kycFront', 'agree'].forEach(function (f) { setError(f, errors[f]); });
+    ['bed', 'moveIn', 'name', 'phone', 'email', 'guardianName', 'guardianPhone', 'kycRef', 'kycFront', 'kycBack', 'agree'].forEach(function (f) { setError(f, errors[f]); });
     var first = Object.keys(errors)[0];
     if (first) {
       var box = $('err-' + first);
@@ -392,7 +472,8 @@ const PAGE = `<!doctype html>
     body.append('bedId', chosenBed.id);
     body.append('preferredCheckInDate', new Date($('moveIn').value + 'T12:00:00').toISOString());
     if (files.photo) body.append('photo', files.photo, files.photo.name);
-    body.append('kycFront', files.kycFront, files.kycFront.name);
+    if (files.kycFront) body.append('kycFront', files.kycFront, files.kycFront.name);
+    if (files.kycBack) body.append('kycBack', files.kycBack, files.kycBack.name);
 
     var button = $('submit');
     button.disabled = true;
@@ -414,6 +495,7 @@ const PAGE = `<!doctype html>
           b.rooms = b.rooms.filter(function (r) { return r.beds.length > 0; });
         });
         chosenBed = null;
+        if (!currentBranch().rooms.some(function (r) { return r.id === chosenRoomId; })) chosenRoomId = null;
         renderRooms();
         $('chosen').hidden = true;
         setError('bed', e.message);

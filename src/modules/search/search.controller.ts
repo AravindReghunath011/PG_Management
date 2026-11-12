@@ -96,6 +96,49 @@ export const searchResidents = async (req: AuthenticatedRequest, res: Response) 
   }
 };
 
+/**
+ * GET /api/residents/moved-out — everyone who has stayed and has no open stay
+ * now, most recent move-out first. Deleted residents are left out.
+ */
+export const listMovedOut = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const ownerId = req.ownerId;
+    const stays = await Stay.find({ ownerId, deletedAt: null }).sort({ checkInDate: -1 }).lean();
+    const byResident = new Map<string, typeof stays>();
+    for (const s of stays) {
+      const list = byResident.get(s.residentId) ?? [];
+      list.push(s);
+      byResident.set(s.residentId, list);
+    }
+    const gone = [...byResident.entries()].filter(([, list]) => list.every((s) => s.checkOutDate));
+    const residents = await Resident.find({ ownerId, deletedAt: null, _id: { $in: gone.map(([id]) => id) } }).lean();
+    const lastStays = residents.map((r) => byResident.get(r._id)![0]);
+    const places = await resolveStayPlaces(ownerId, lastStays.map((s) => s.bedId));
+
+    const results = residents
+      .map((r) => {
+        const last = byResident.get(r._id)!.reduce((a, b) => (b.checkOutDate! > a.checkOutDate! ? b : a));
+        const place = places.get(last.bedId);
+        return {
+          id: r._id,
+          name: r.name,
+          phone: r.phone,
+          photoUrl: r.photoUrl ?? null,
+          bedLabel: place?.bedLabel ?? null,
+          branchName: place?.branchName ?? null,
+          checkInDate: last.checkInDate,
+          checkOutDate: last.checkOutDate,
+        };
+      })
+      .sort((a, b) => new Date(b.checkOutDate!).getTime() - new Date(a.checkOutDate!).getTime());
+
+    return res.status(200).json({ results });
+  } catch (error) {
+    console.error('listMovedOut error:', error);
+    return res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Error loading past tenants.' } });
+  }
+};
+
 // Retrieve historical occupancy and payments of a bed on any date
 export const queryBedHistory = async (req: AuthenticatedRequest, res: Response) => {
   try {

@@ -95,7 +95,9 @@ conflicting edits to the same record are rare and low-stakes. Use
 - Do NOT allow two open (un-checked-out) `Stay`s on the same Bed at once.
 - Do NOT add payment-gateway/UPI code — v1 only tracks paid/unpaid status.
 - Do NOT add staff/warden logins or role-based permissions — owner-only for v1.
-- Do NOT build hotel features (hourly/daily rates, calendars).
+- Do NOT build hotel features (hourly rates, booking calendars). **Exception, approved Nov 2026:** daily
+  tenants (`DailyStay`, paid per day, quick check-in/check-out) are in scope; they stay separate from
+  `Stay` so monthly dues/deposits/notices never apply to them.
 - Do NOT use `localStorage`/`sessionStorage`-style assumptions; the client store is the local DB.
 - Do NOT hardcode secrets; read from env config.
 - Do NOT skip the `ownerId` filter on any query "to make it work" — that is a data-leak bug.

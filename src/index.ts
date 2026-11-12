@@ -31,6 +31,7 @@ import * as reportsController from './modules/reports/reports.controller';
 import * as expenseController from './modules/expenses/expense.controller';
 import * as adminController from './modules/admin/admin.controller';
 import * as notificationsController from './modules/notifications/notifications.controller';
+import * as dailyStayController from './modules/dailyStays/dailyStay.controller';
 import * as pushController from './modules/push/push.controller';
 import { startPushScheduler } from './modules/push/pushAlerts';
 import * as inviteController from './modules/invites/invite.controller';
@@ -134,6 +135,7 @@ app.post(
   kycUpload.fields([
     { name: 'photo', maxCount: 1 },
     { name: 'kycFront', maxCount: 1 },
+    { name: 'kycBack', maxCount: 1 },
   ]),
   joinRequestController.submitJoinRequest
 );
@@ -166,6 +168,13 @@ app.post('/api/join-requests/:id/approve', authenticateOwner, joinRequestControl
 app.post('/api/join-requests/:id/reject', authenticateOwner, joinRequestController.rejectJoinRequest);
 
 // Notifications (Protected): derived from the owner's data on every read
+// Daily tenants (Protected): short stays paid by the day
+app.get('/api/daily-stays', authenticateOwner, dailyStayController.listDailyStays);
+app.post('/api/daily-stays', authenticateOwner, enforceOwnerBodyScope, dailyStayController.checkInDailyStay);
+app.put('/api/daily-stays/:id', authenticateOwner, dailyStayController.updateDailyStay);
+app.post('/api/daily-stays/:id/check-out', authenticateOwner, dailyStayController.checkOutDailyStay);
+app.delete('/api/daily-stays/:id', authenticateOwner, dailyStayController.deleteDailyStay);
+
 app.get('/api/notifications', authenticateOwner, notificationsController.getNotifications);
 app.put('/api/notifications/seen', authenticateOwner, notificationsController.markNotificationsSeen);
 
@@ -225,6 +234,8 @@ app.delete('/api/beds/:id', authenticateOwner, bedController.deleteBed);
 
 // Residents CRUD
 app.get('/api/residents', authenticateOwner, residentController.getResidents);
+// Before /:id so "moved-out" isn't read as an id.
+app.get('/api/residents/moved-out', authenticateOwner, searchController.listMovedOut);
 app.get('/api/residents/:id', authenticateOwner, residentController.getResidentById);
 app.get('/api/residents/:id/history', authenticateOwner, residentController.getResidentHistory);
 app.get('/api/residents/:id/changes', authenticateOwner, getResidentChanges);

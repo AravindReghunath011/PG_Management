@@ -43,6 +43,7 @@ export const PUBLIC_PAGE_CSS = `
   .btns { display: flex; gap: 8px; flex-wrap: wrap; }
   .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 42px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--border); background: #fff; color: var(--blue); font: inherit; font-weight: 600; font-size: 14px; cursor: pointer; }
   .btn.solid { background: var(--blue-tint); border-color: transparent; }
+  .btn.danger { color: #C0392B; border-color: #F2C4BE; }
   .doc { border: 1.5px dashed #C9D6F2; border-radius: 12px; padding: 14px; margin-top: 10px; }
   .doc .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
   .doc .name { font-weight: 600; font-size: 14px; }

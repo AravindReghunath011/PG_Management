@@ -209,13 +209,23 @@ export const checkInResident = async (req: AuthenticatedRequest, res: Response) 
   }
 };
 
+/**
+ * The app sends picked days as local midnight, but a check-in can have a time
+ * (e.g. noon from an apply link). A date on the check-in day itself must not
+ * count as "before check-in", so it becomes the check-in moment.
+ */
+function sameDayAsCheckIn(when: Date, checkIn: Date): Date {
+  const gap = checkIn.getTime() - when.getTime();
+  return gap > 0 && gap < 86_400_000 ? new Date(checkIn) : when;
+}
+
 export const checkOutResident = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     // deleteResident: true = "Delete tenant" — check out, then soft-delete the
     // Resident (deletedAt + isDeleted). Without it this is a plain move-out
     // and they stay findable as a past tenant.
-    const { checkOutDate, settlement, deleteResident } = req.body;
+    const { checkOutDate, settlement, deleteResident, securityDeposit } = req.body;
     const ownerId = req.ownerId!;
 
     const parsedSettlement = settlement !== undefined && settlement !== null ? parseSettlement(settlement) : null;
@@ -248,8 +258,8 @@ export const checkOutResident = async (req: AuthenticatedRequest, res: Response)
       });
     }
 
-    const checkoutTime = new Date(checkOutDate);
-    if (checkoutTime < stay.checkInDate) {
+    const checkoutTime = sameDayAsCheckIn(new Date(checkOutDate), stay.checkInDate);
+    if (Number.isNaN(checkoutTime.getTime()) || checkoutTime < stay.checkInDate) {
       return res.status(400).json({
         error: {
           code: 'INVALID_CHECKOUT_DATE',
@@ -261,6 +271,19 @@ export const checkOutResident = async (req: AuthenticatedRequest, res: Response)
     // Every month of the stay up to move-out is owed; later dues aren't.
     await ensureMonthlyDues(ownerId, stay.checkInDate, checkoutTime, new Date(), { stayId: stay._id });
     await voidAutoDuesFrom(ownerId, stay._id, checkoutTime);
+    // The owner may correct the deposit held at move-out (e.g. typed wrong at check-in).
+    let depositCorrection: { from: number; to: number } | null = null;
+    if (securityDeposit !== undefined && securityDeposit !== null) {
+      const parsed = parseAmountPaise(securityDeposit);
+      if (parsed === null || parsed < 0) {
+        return res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'securityDeposit must be a non-negative amount.' } });
+      }
+      if (parsed !== stay.securityDeposit) {
+        depositCorrection = { from: stay.securityDeposit, to: parsed };
+        stay.securityDeposit = parsed;
+      }
+    }
+
     if (parsedSettlement) {
       const settled = await settleDeposit(ownerId, stay, checkoutTime, parsedSettlement.value);
       if ('error' in settled) {
@@ -280,6 +303,7 @@ export const checkOutResident = async (req: AuthenticatedRequest, res: Response)
       note: checkOutPlace,
       changes: [
         { field: 'checkOutDate', from: null, to: checkoutTime.toISOString() },
+        ...(depositCorrection ? [{ field: 'securityDeposit', ...depositCorrection }] : []),
         ...(stay.depositSettlement
           ? [{ field: 'depositRefund', from: stay.securityDeposit, to: stay.depositSettlement.refundAmount }]
           : []),
@@ -578,7 +602,7 @@ export const moveStay = async (req: AuthenticatedRequest, res: Response) => {
       return res.status(400).json({ error: { code: 'ALREADY_CHECKED_OUT', message: 'This stay is already checked out.' } });
     }
 
-    const when = moveDate ? new Date(moveDate) : new Date();
+    const when = sameDayAsCheckIn(moveDate ? new Date(moveDate) : new Date(), stay.checkInDate);
     if (Number.isNaN(when.getTime()) || when < stay.checkInDate || when.getTime() > Date.now() + 60_000) {
       return res.status(400).json({
         error: { code: 'INVALID_MOVE_DATE', message: 'Move date must be between check-in and today.' },

@@ -47,6 +47,7 @@ export interface IJoinRequest {
   kycType: 'Aadhaar' | 'Passport' | 'DL' | 'Other';
   kycRef: string;
   kycImageUrl: string | null;
+  kycBackImageUrl: string | null;
   photoUrl: string | null;
   guardianName: string | null;
   guardianPhone: string | null;
@@ -74,6 +75,7 @@ const JoinRequestSchema = new Schema<IJoinRequest>(
     kycType: { type: String, enum: ['Aadhaar', 'Passport', 'DL', 'Other'], required: true },
     kycRef: { type: String, default: '' },
     kycImageUrl: { type: String, default: null },
+    kycBackImageUrl: { type: String, default: null },
     photoUrl: { type: String, default: null },
     guardianName: { type: String, default: null },
     guardianPhone: { type: String, default: null },

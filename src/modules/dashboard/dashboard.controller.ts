@@ -316,7 +316,7 @@ export const getOverview = async (req: AuthenticatedRequest, res: Response) => {
     const stayById = new Map(stays.map((s) => [s._id, s]));
     const [residents, beds] = await Promise.all([
       Resident.find({ ...ownerFilter, _id: { $in: shown.map((r) => r.residentId) } })
-        .select('_id name phone')
+        .select('_id name phone photoUrl')
         .lean(),
       Bed.find({ ...ownerFilter, _id: { $in: stays.map((s) => s.bedId) } })
         .select('_id bedNumber roomId')
@@ -339,6 +339,7 @@ export const getOverview = async (req: AuthenticatedRequest, res: Response) => {
         stayId: r.stayId,
         name: resident?.name ?? 'Unknown',
         phone: resident?.phone ?? null,
+        photoUrl: resident?.photoUrl ?? null,
         roomNumber: room?.roomNumber ?? null,
         bedNumber: bed?.bedNumber ?? null,
         totalDue: r.due,

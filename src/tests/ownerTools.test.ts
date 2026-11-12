@@ -419,6 +419,37 @@ describe('Move resident to another bed', () => {
     expect(resident.body.currentBedId).toBe(beds[1]);
   });
 
+  it('accepts a move or move-out on the check-in day even when check-in had a time of day', async () => {
+    const { auth, beds } = await setup('move-sameday@example.com');
+    const { stayId } = await checkIn(auth, beds[0], '9000000035', 500000, 0, 1000000);
+    // Check-in at noon today; the app sends today as local midnight (earlier).
+    const noon = new Date();
+    noon.setHours(12, 0, 0, 0);
+    await Stay.updateOne({ _id: stayId }, { $set: { checkInDate: noon, rentAnchorDate: noon } });
+    const midnight = new Date(noon);
+    midnight.setHours(0, 0, 0, 0);
+
+    const moved = await request(app)
+      .put(`/api/stays/${stayId}/move`)
+      .set(auth)
+      .send({ bedId: beds[1], moveDate: midnight.toISOString() });
+    // Noon may still be in the future when the test runs early in the day; then
+    // the move is refused for being after "now", not for being before check-in.
+    if (noon.getTime() <= Date.now()) {
+      expect(moved.status).toBe(200);
+      const out = await request(app)
+        .put(`/api/stays/${moved.body.id}/checkout`)
+        .set(auth)
+        .send({ checkOutDate: midnight.toISOString(), securityDeposit: 800000, settlement: { deductions: [] } });
+      expect(out.status).toBe(200);
+      const closed = await Stay.findById(moved.body.id);
+      expect(closed?.securityDeposit).toBe(800000);
+      expect(closed?.depositSettlement?.refundAmount).toBe(800000);
+    } else {
+      expect(moved.body.error?.code).toBe('INVALID_MOVE_DATE');
+    }
+  });
+
   it('rejects an occupied bed, the same bed, and another owner’s stay', async () => {
     const { auth, beds } = await setup('move-bad@example.com');
     const a = await checkIn(auth, beds[0], '9000000031', 500000, 10);

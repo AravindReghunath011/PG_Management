@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { Request, Response } from 'express';
 
 import { PUBLIC_PAGE_CSS, publicPageCsp } from './publicPageStyles';
+import { PUBLIC_FORM_CHECKS } from './publicFormChecks';
 
 /**
  * GET /join/:token — the self check-in page a new Resident opens from the
@@ -14,7 +15,11 @@ export const serveJoinPage = (_req: Request, res: Response) => {
   res.setHeader('Content-Security-Policy', publicPageCsp(nonce));
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Referrer-Policy', 'no-referrer');
-  res.type('html').send(PAGE.replace('__CSS__', PUBLIC_PAGE_CSS).replace(/__NONCE__/g, nonce));
+  res.type('html').send(
+    PAGE.replace('__CSS__', PUBLIC_PAGE_CSS)
+      .replace('__CHECKS__', () => PUBLIC_FORM_CHECKS)
+      .replace(/__NONCE__/g, nonce),
+  );
 };
 
 const PAGE = `<!doctype html>
@@ -57,13 +62,13 @@ const PAGE = `<!doctype html>
     </section>
 
     <section class="card">
-      <h2>Your photo <span class="opt k">(optional)</span></h2>
-      <p class="hint">Used on your gate pass.</p>
+      <h2>Your photo</h2>
       <div class="photoRow">
         <div class="avatar" id="photoPreview">Photo</div>
         <div class="btns">
           <button type="button" class="btn solid" data-pick="photoCamera">📷 Take photo</button>
           <button type="button" class="btn" data-pick="photoFile">Upload</button>
+          <button type="button" class="btn danger" id="photoRemove" hidden>✕ Remove</button>
         </div>
       </div>
       <input class="sr" type="file" id="photoCamera" accept="image/*" capture="user" tabindex="-1">
@@ -81,8 +86,9 @@ const PAGE = `<!doctype html>
       <input type="tel" id="phone" name="phone" autocomplete="tel-national" inputmode="numeric" maxlength="10" placeholder="10-digit number">
       <div class="err" id="err-phone" hidden></div>
 
-      <label class="f" for="email">Email <span class="opt">(optional)</span></label>
+      <label class="f" for="email">Email</label>
       <input type="email" id="email" name="email" autocomplete="email" placeholder="you@example.com">
+      <div class="err" id="err-email" hidden></div>
 
       <label class="f">Food</label>
       <div class="chips" role="group" aria-label="Food preference">
@@ -92,9 +98,10 @@ const PAGE = `<!doctype html>
     </section>
 
     <section class="card">
-      <h2>Parent / emergency contact <span class="opt k">(optional)</span></h2>
+      <h2>Parent / emergency contact</h2>
       <label class="f" for="guardianName">Name</label>
       <input type="text" id="guardianName" name="guardianName" maxlength="50">
+      <div class="err" id="err-guardianName" hidden></div>
       <label class="f" for="guardianRelation">Relation</label>
       <input type="text" id="guardianRelation" name="guardianRelation" placeholder="Father, Mother, Brother…">
       <label class="f" for="guardianPhone">Mobile number</label>
@@ -104,7 +111,7 @@ const PAGE = `<!doctype html>
 
     <section class="card">
       <h2>ID proof</h2>
-      <p class="hint">Take a clear photo, or upload a JPG, PNG or PDF (max 5 MB).</p>
+      <p class="hint">Add the front, and the back if your ID has one. Take a clear photo, or upload a JPG, PNG or PDF (max 5 MB).</p>
       <label class="f" for="kycType">ID type</label>
       <select id="kycType" name="kycType">
         <option value="Aadhaar">Aadhaar Card</option>
@@ -112,24 +119,37 @@ const PAGE = `<!doctype html>
         <option value="DL">Driving Licence</option>
         <option value="Other">Other ID</option>
       </select>
-      <label class="f" for="kycRef">ID number <span class="opt">(optional)</span></label>
-      <input type="text" id="kycRef" name="kycRef" autocomplete="off" maxlength="30">
+      <label class="f" for="kycRef">ID number</label>
+      <input type="text" id="kycRef" name="kycRef" autocomplete="off" maxlength="30" inputmode="numeric" placeholder="12-digit number">
       <div class="err" id="err-kycRef" hidden></div>
 
       <div class="doc">
-        <div class="row"><span class="name">ID photo</span><span class="file" id="kycFrontName"></span></div>
+        <div class="row"><span class="name">Front side</span><span class="file" id="kycFrontName"></span></div>
         <div class="btns">
           <button type="button" class="btn solid" data-pick="kycFrontCamera">📷 Take photo</button>
           <button type="button" class="btn" data-pick="kycFrontFile">Upload file</button>
+          <button type="button" class="btn danger" id="kycFrontRemove" hidden>✕ Remove</button>
         </div>
         <img class="preview" id="kycFrontPreview" alt="ID preview" hidden>
         <div class="err" id="err-kycFront" hidden></div>
       </div>
       <input class="sr" type="file" id="kycFrontCamera" accept="image/*" capture="environment" tabindex="-1">
       <input class="sr" type="file" id="kycFrontFile" accept="image/jpeg,image/png,application/pdf" tabindex="-1">
+      <div class="doc">
+        <div class="row"><span class="name">Back side</span><span class="file" id="kycBackName"></span></div>
+        <div class="btns">
+          <button type="button" class="btn solid" data-pick="kycBackCamera">📷 Take photo</button>
+          <button type="button" class="btn" data-pick="kycBackFile">Upload file</button>
+          <button type="button" class="btn danger" id="kycBackRemove" hidden>✕ Remove</button>
+        </div>
+        <img class="preview" id="kycBackPreview" alt="ID back preview" hidden>
+        <div class="err" id="err-kycBack" hidden></div>
+      </div>
+      <input class="sr" type="file" id="kycBackCamera" accept="image/*" capture="environment" tabindex="-1">
+      <input class="sr" type="file" id="kycBackFile" accept="image/jpeg,image/png,application/pdf" tabindex="-1">
     </section>
 
-    <label class="check"><input type="checkbox" id="agree"> <span>I confirm these details are correct and belong to me.</span></label>
+    <label class="check"><input type="checkbox" id="agree"> <span>I confirm these details are correct and belong to me. They will be shared only with the owner of <b id="consentPg">this PG</b>.</span></label>
     <div class="err" id="err-agree" hidden></div>
 
     <div class="banner error" id="formError" hidden></div>
@@ -144,9 +164,10 @@ const PAGE = `<!doctype html>
   var api = '/api/public/invites/' + encodeURIComponent(token);
   var MAX_BYTES = 5 * 1024 * 1024;
   var $ = function (id) { return document.getElementById(id); };
-  var files = { photo: null, kycFront: null };
+  var files = { photo: null, kycFront: null, kycBack: null };
   var food = 'with_food';
   var invite = null;
+__CHECKS__
 
   var rupees = function (paise) {
     return '₹' + Math.round(paise / 100).toLocaleString('en-IN');
@@ -186,6 +207,7 @@ const PAGE = `<!doctype html>
     }
     invite = res.body;
     $('pgName').textContent = invite.pgName;
+    $('consentPg').textContent = invite.pgName;
     document.title = 'Join ' + invite.pgName;
     if (!invite.bedAvailable) {
       return showState('bad', 'Bed no longer available', 'This bed has been taken. Please contact ' + (invite.ownerName || 'the PG owner') + '.');
@@ -253,6 +275,7 @@ const PAGE = `<!doctype html>
         }
         files[slot] = file;
         setError(slot, '');
+        $(slot + 'Remove').hidden = false;
         var preview = file.type.indexOf('image/') === 0 ? URL.createObjectURL(file) : null;
         if (slot === 'photo') {
           var box = $('photoPreview');
@@ -270,10 +293,26 @@ const PAGE = `<!doctype html>
       });
     });
   }
+  function clearFile(slot) {
+    files[slot] = null;
+    $(slot + 'Remove').hidden = true;
+    if (slot === 'photo') {
+      $('photoPreview').textContent = 'Photo';
+    } else {
+      $(slot + 'Name').textContent = '';
+      $(slot + 'Preview').hidden = true;
+      $(slot + 'Preview').removeAttribute('src');
+    }
+  }
+  $('photoRemove').addEventListener('click', function () { clearFile('photo'); });
+  $('kycFrontRemove').addEventListener('click', function () { clearFile('kycFront'); });
+  $('kycBackRemove').addEventListener('click', function () { clearFile('kycBack'); });
   wire('photoCamera', 'photo');
   wire('photoFile', 'photo');
   wire('kycFrontCamera', 'kycFront');
   wire('kycFrontFile', 'kycFront');
+  wire('kycBackCamera', 'kycBack');
+  wire('kycBackFile', 'kycBack');
 
   document.querySelectorAll('[data-food]').forEach(function (chip) {
     chip.addEventListener('click', function () {
@@ -284,26 +323,16 @@ const PAGE = `<!doctype html>
     });
   });
 
-  ['phone', 'guardianPhone'].forEach(function (id) {
-    $(id).addEventListener('input', function () { this.value = this.value.replace(/\\D/g, '').slice(0, 10); });
-  });
-
-  // An error goes away as soon as the field is touched again.
-  ['name', 'phone', 'guardianPhone', 'kycRef'].forEach(function (id) {
-    $(id).addEventListener('input', function () { setError(id, ''); });
-  });
+  // Number fields clean themselves; an error goes away as soon as the field is touched again.
+  wireDetailInputs($, setError);
   $('agree').addEventListener('change', function () { setError('agree', ''); });
 
   // ── Submit ─────────────────────────────────────────────────────
   function validate() {
     var v = function (id) { return $(id).value.trim(); };
-    var errors = {};
-    if (!v('name')) errors.name = 'Enter your full name.';
-    if (!/^\\d{10}$/.test(v('phone'))) errors.phone = 'Enter your 10-digit mobile number.';
-    if (v('guardianPhone') && !/^\\d{10}$/.test(v('guardianPhone'))) errors.guardianPhone = 'Enter a 10-digit number, or leave it empty.';
-    if (!files.kycFront) errors.kycFront = 'Add a photo of your ID.';
+    var errors = checkDetails(v);
     if (!$('agree').checked) errors.agree = 'Please confirm your details.';
-    ['photo', 'name', 'phone', 'guardianPhone', 'kycRef', 'kycFront', 'agree'].forEach(function (f) { setError(f, errors[f]); });
+    ['photo', 'name', 'phone', 'email', 'guardianName', 'guardianPhone', 'kycRef', 'kycFront', 'kycBack', 'agree'].forEach(function (f) { setError(f, errors[f]); });
     var first = Object.keys(errors)[0];
     if (first) {
       var el = $('err-' + first);
@@ -323,7 +352,8 @@ const PAGE = `<!doctype html>
     });
     data.append('foodPreference', food);
     if (files.photo) data.append('photo', files.photo, files.photo.name);
-    data.append('kycFront', files.kycFront, files.kycFront.name);
+    if (files.kycFront) data.append('kycFront', files.kycFront, files.kycFront.name);
+    if (files.kycBack) data.append('kycBack', files.kycBack, files.kycBack.name);
 
     var button = $('submit');
     button.disabled = true;

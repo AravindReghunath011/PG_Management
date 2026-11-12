@@ -263,7 +263,7 @@ export const submitPublicInvite = async (req: Request, res: Response) => {
   const kycFront = files.kycFront?.[0];
   const kycBack = files.kycBack?.[0];
   if (photo && !isImageFile(photo.originalname)) return fail(res, 400, 'BAD_REQUEST', 'Your photo must be a JPG or PNG.');
-  if (!kycFront) return fail(res, 400, 'BAD_REQUEST', 'Please add a photo of your ID.');
+  // ID photos are optional: none, the front, or front and back.
 
   const duplicate = await Resident.findOne({ ownerId, phone: input.phone, deletedAt: null });
   if (duplicate) {

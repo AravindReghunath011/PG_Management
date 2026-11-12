@@ -122,7 +122,7 @@ export const getPublicJoinLink = async (req: Request, res: Response) => {
   }
 };
 
-type UploadedFiles = Partial<Record<'photo' | 'kycFront', Express.Multer.File[]>>;
+type UploadedFiles = Partial<Record<'photo' | 'kycFront' | 'kycBack', Express.Multer.File[]>>;
 
 /** POST /api/public/join-links/:token (multipart) — send a request to stay. */
 export const submitJoinRequest = async (req: Request, res: Response) => {
@@ -137,15 +137,17 @@ export const submitJoinRequest = async (req: Request, res: Response) => {
 
     const date = req.body?.preferredCheckInDate ? new Date(req.body.preferredCheckInDate) : null;
     const now = Date.now();
-    if (!date || Number.isNaN(date.getTime()) || date.getTime() < now - 7 * DAY || date.getTime() > now + 365 * DAY) {
-      return fail(res, 400, 'BAD_REQUEST', 'Choose a move-in date within the next year.');
+    if (!date || Number.isNaN(date.getTime()) || date.getTime() < now - 3 * 365 * DAY || date.getTime() > now + 365 * DAY) {
+      // Past dates are allowed: people already staying use the link too.
+      return fail(res, 400, 'BAD_REQUEST', 'Choose a move-in date from the last 3 years or the next year.');
     }
 
     const files = (req.files ?? {}) as UploadedFiles;
     const photo = files.photo?.[0];
+    // ID photos are optional: none, the front, or front and back.
     const kycFront = files.kycFront?.[0];
+    const kycBack = files.kycBack?.[0];
     if (photo && !isImageFile(photo.originalname)) return fail(res, 400, 'BAD_REQUEST', 'Your photo must be a JPG or PNG.');
-    if (!kycFront) return fail(res, 400, 'BAD_REQUEST', 'Please add a photo of your ID.');
 
     const { beds } = await bedCatalog(ownerId, link.branchId);
     const chosen = typeof req.body?.bedId === 'string' ? beds.get(req.body.bedId) : undefined;
@@ -163,10 +165,11 @@ export const submitJoinRequest = async (req: Request, res: Response) => {
 
     // Files are stored under the request id, which becomes the Resident id on approval.
     const requestId = uuidv4();
-    const urls: Partial<Record<'photoUrl' | 'kycImageUrl', string>> = {};
+    const urls: Partial<Record<'photoUrl' | 'kycImageUrl' | 'kycBackImageUrl', string>> = {};
     try {
       if (photo) urls.photoUrl = (await storeResidentFile(requestId, 'photo', photo)).url;
-      urls.kycImageUrl = (await storeResidentFile(requestId, 'kyc_front', kycFront)).url;
+      if (kycFront) urls.kycImageUrl = (await storeResidentFile(requestId, 'kyc_front', kycFront)).url;
+      if (kycBack) urls.kycBackImageUrl = (await storeResidentFile(requestId, 'kyc_back', kycBack)).url;
     } catch (uploadError) {
       console.error('join request upload error:', uploadError);
       return fail(res, 502, 'UPLOAD_FAILED', 'We couldn’t upload your photos. Please try again.');
@@ -286,6 +289,7 @@ async function toRequestResponses(ownerId: string, requests: IJoinRequest[]) {
       kycType: r.kycType,
       kycRef: r.kycRef,
       kycImageUrl: r.kycImageUrl,
+      kycBackImageUrl: r.kycBackImageUrl ?? null,
       photoUrl: r.photoUrl,
       guardianName: r.guardianName,
       guardianPhone: r.guardianPhone,
@@ -399,6 +403,7 @@ export const approveJoinRequest = async (req: AuthenticatedRequest, res: Respons
           kycType: request.kycType,
           kycRef: request.kycRef,
           kycImageUrl: request.kycImageUrl,
+          kycBackImageUrl: request.kycBackImageUrl ?? null,
           photoUrl: request.photoUrl,
           guardianName: request.guardianName,
           guardianPhone: request.guardianPhone,
