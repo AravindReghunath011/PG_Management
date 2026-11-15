@@ -5,7 +5,7 @@ import { Bed } from '../beds/bed.model';
 import { Resident, residentDeletedFields } from '../residents/resident.model';
 import { Room } from '../rooms/room.model';
 import { v4 as uuidv4 } from 'uuid';
-import { ensureMonthlyDues, voidAutoDuesFrom } from '../payments/monthlyDues';
+import { ensureMonthlyDues, monthKeyOf, voidAutoDuesFrom } from '../payments/monthlyDues';
 import { Payment } from '../payments/payment.model';
 import { PaymentTransaction } from '../payments/paymentTransaction.model';
 import { openDues, parseSettlement, settleDeposit } from './depositSettlement';
@@ -342,7 +342,7 @@ export const updateStay = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const ownerId = req.ownerId!;
     const { id } = req.params;
-    const { monthlyRent, securityDeposit, checkInDate } = req.body;
+    const { monthlyRent, securityDeposit, checkInDate, applyToCurrentMonth } = req.body;
 
     const stay = await Stay.findOne({ _id: id, ownerId, deletedAt: null });
     if (!stay) {
@@ -407,8 +407,32 @@ export const updateStay = async (req: AuthenticatedRequest, res: Response) => {
       action: 'stay.updated',
       changes: diffFields<IStay>(before, stay.toObject(), ['checkInDate', 'monthlyRent', 'securityDeposit']),
     });
+
+    // "Apply to this month too": this month's rent due takes the new rent.
+    // If it isn't raised yet, it will be raised at the new rent anyway.
+    let currentMonthUpdated = false;
+    if (applyToCurrentMonth === true && monthlyRent !== undefined && before.monthlyRent !== stay.monthlyRent) {
+      const now = new Date();
+      await ensureMonthlyDues(ownerId, now, now, now, { stayId: stay._id });
+      const due = await Payment.findOne({ ownerId, stayId: stay._id, deletedAt: null, dueMonth: monthKeyOf(now) });
+      if (due && due.rentDue !== stay.monthlyRent) {
+        const from = due.rentDue;
+        due.rentDue = stay.monthlyRent;
+        await due.save();
+        currentMonthUpdated = true;
+        await logChange(req, {
+          ownerId,
+          residentId: stay.residentId,
+          stayId: stay._id,
+          action: 'stay.rent_revised',
+          note: `Rent for ${due.dueMonth}`,
+          changes: [{ field: 'rentDue', from, to: due.rentDue }],
+        });
+      }
+    }
+
     const [enriched] = await enrichStays(ownerId, [stay]);
-    return res.status(200).json(enriched);
+    return res.status(200).json({ ...enriched, currentMonthUpdated });
   } catch (error) {
     console.error('updateStay error:', error);
     return res.status(500).json({
@@ -471,9 +495,9 @@ export const giveNotice = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const ownerId = req.ownerId!;
     const { id } = req.params;
-    const moveOut = new Date(req.body?.moveOutDate);
+    const parsedMoveOut = new Date(req.body?.moveOutDate);
 
-    if (!req.body?.moveOutDate || Number.isNaN(moveOut.getTime())) {
+    if (!req.body?.moveOutDate || Number.isNaN(parsedMoveOut.getTime())) {
       return res.status(400).json({
         error: { code: 'BAD_REQUEST', message: 'moveOutDate must be a valid date.' },
       });
@@ -488,6 +512,7 @@ export const giveNotice = async (req: AuthenticatedRequest, res: Response) => {
         error: { code: 'ALREADY_CHECKED_OUT', message: 'This stay is already checked out.' },
       });
     }
+    const moveOut = sameDayAsCheckIn(parsedMoveOut, stay.checkInDate);
     if (moveOut < stay.checkInDate) {
       return res.status(400).json({
         error: { code: 'INVALID_NOTICE_DATE', message: 'Move-out date cannot be before check-in.' },

@@ -23,6 +23,8 @@ export interface IPayment {
   otherPaid: number;
   
   notes: string | null;
+  /** Rent let go when a month was closed for less ("no balance"); dues were lowered by this much. */
+  waivedPaise?: number;
   createdAt?: Date;
   updatedAt?: Date;
   deletedAt: Date | null;
@@ -50,6 +52,7 @@ const PaymentSchema = new Schema<IPayment>(
     otherPaid: { type: Number, default: 0, min: 0 },
     
     notes: { type: String, default: null },
+    waivedPaise: { type: Number, default: 0, min: 0 },
     deletedAt: { type: Date, default: null },
   },
   {

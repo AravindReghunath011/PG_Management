@@ -171,7 +171,7 @@ export const generateDue = async (req: AuthenticatedRequest, res: Response) => {
 export const recordPayment = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const { rentCollected, electricityCollected, otherCollected, collectedAt, paymentMode, notes } = req.body;
+    const { rentCollected, electricityCollected, otherCollected, collectedAt, paymentMode, notes, closeBalance } = req.body;
     const ownerId = req.ownerId!;
 
     const rentDelta = rentCollected !== undefined ? parseAmountPaise(rentCollected) : 0;
@@ -229,6 +229,26 @@ export const recordPayment = async (req: AuthenticatedRequest, res: Response) =>
     payment.otherPaid = (payment.otherPaid || 0) + otherDelta;
     if (notes !== undefined) payment.notes = notes;
 
+    // "Close this month": take what was paid as the full amount for the month.
+    // Each line's due drops to what was paid on it; the difference is kept as
+    // waivedPaise so reports can still show it was let go.
+    let waived = 0;
+    if (closeBalance === true) {
+      const lines = [
+        ['rentDue', 'rentPaid'],
+        ['electricityDue', 'electricityPaid'],
+        ['otherDue', 'otherPaid'],
+      ] as const;
+      for (const [dueKey, paidKey] of lines) {
+        const left = payment[dueKey] - payment[paidKey];
+        if (left > 0) {
+          waived += left;
+          payment[dueKey] = payment[paidKey];
+        }
+      }
+      payment.waivedPaise = (payment.waivedPaise ?? 0) + waived;
+    }
+
     await payment.save();
     await logChange(req, {
       ownerId,
@@ -240,6 +260,7 @@ export const recordPayment = async (req: AuthenticatedRequest, res: Response) =>
         { field: 'rentPaid', from: null, to: rentDelta },
         { field: 'electricityPaid', from: null, to: electricityDelta },
         { field: 'otherPaid', from: null, to: otherDelta },
+        { field: 'waived', from: null, to: waived },
       ].filter((c) => (c.to ?? 0) > 0),
     });
     const [enriched] = await enrichPayments(ownerId, [payment]);
